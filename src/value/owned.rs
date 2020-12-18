@@ -25,17 +25,9 @@ mod serialize;
 
 use crate::prelude::*;
 use crate::{AlignedBuf, Deserializer, Node, Result, StaticNode};
-#[cfg(not(feature = "preserve_order"))]
 use halfbrown::HashMap;
-#[cfg(feature = "preserve_order")]
-use indexmap::IndexMap as IndexMap;
-#[cfg(feature = "preserve_order")]
-use crate::IndexMapHack;
 use std::fmt;
 use std::ops::{Index, IndexMut};
-
-#[cfg(feature = "preserve_order")]
-type HashMap<K, V> = IndexMap<K, V, ahash::RandomState>;
 
 /// Representation of a JSON object
 pub type Object = HashMap<String, Value>;
@@ -341,10 +333,7 @@ impl<'de> OwnedDeserializer<'de> {
             if let Node::String(key) = unsafe { self.de.next_() } {
                 // We have to call parse short str twice since parse_short_str
                 // does not move the cursor forward
-                #[cfg(not(feature = "preserve_order"))]
                 res.insert_nocheck(key.into(), self.parse());
-                #[cfg(feature = "preserve_order")]
-                res.insert(key.into(), self.parse());
             } else {
                 unreachable!()
             }

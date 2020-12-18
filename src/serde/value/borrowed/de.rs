@@ -8,9 +8,6 @@ use serde_ext::de::{
 use serde_ext::forward_to_deserialize_any;
 use std::fmt;
 
-#[cfg(feature = "preserve_order")]
-use crate::IndexMapHack;
-
 impl<'de> de::Deserializer<'de> for Value<'de> {
     type Error = Error;
 
@@ -111,15 +108,14 @@ impl<'de, 'value> SeqAccess<'de> for Array<'value, 'de> {
     }
 }
 
-struct ObjectAccess<'de, 'value: 'de, I: Iterator<Item = (&'de Cow<'value, str>, &'de Value<'value>)>> {
-    i: I,
+struct ObjectAccess<'de, 'value: 'de> {
+    i: halfbrown::Iter<'de, Cow<'value, str>, Value<'value>>,
     v: &'de Value<'value>,
 }
 
 // `MapAccess` is provided to the `Visitor` to give it the ability to iterate
 // through entries of the map.
-impl<'de, 'value, I> MapAccess<'de> for ObjectAccess<'value, 'de, I>
-where I: Iterator<Item = (&'value Cow<'de, str>, &'value Value<'de>)> {
+impl<'de, 'value> MapAccess<'de> for ObjectAccess<'value, 'de> {
     type Error = Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
