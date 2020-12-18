@@ -9,6 +9,9 @@ use serde::forward_to_deserialize_any;
 use serde_ext::de::IntoDeserializer;
 use std::fmt;
 
+#[cfg(feature = "preserve_order")]
+use crate::IndexMapHack;
+
 impl<'de> de::Deserializer<'de> for Value {
     type Error = Error;
 

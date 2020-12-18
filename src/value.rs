@@ -65,7 +65,14 @@ pub use self::owned::{
     Value as OwnedValue,
 };
 use crate::{Deserializer, Result};
+#[cfg(not(feature = "preserve_order"))]
 use halfbrown::HashMap;
+#[cfg(feature = "preserve_order")]
+use indexmap::IndexMap;
+
+#[cfg(feature = "preserve_order")]
+type HashMap<K, V> = IndexMap<K, V, ahash::RandomState>;
+
 use std::hash::Hash;
 use std::marker::PhantomData;
 use tape::Node;
@@ -144,11 +151,37 @@ where
         // element so we eat this
         for _ in 0..len {
             if let Node::String(key) = unsafe { self.de.next_() } {
+                #[cfg(not(feature = "preserve_order"))]
                 res.insert_nocheck(key.into(), self.parse());
+                #[cfg(feature = "preserve_order")]
+                res.insert(key.into(), self.parse());
             } else {
                 unreachable!()
             }
         }
         Value::from(res)
+    }
+}
+
+/**
+*/
+#[cfg(feature = "preserve_order")]
+pub trait IndexMapHack {
+    /**
+    */
+    fn new() -> Self;
+    /**
+    */
+    fn with_capacity(n: usize) -> Self;
+}
+
+#[cfg(feature = "preserve_order")]
+impl<K, V> IndexMapHack for indexmap::IndexMap<K, V, ahash::RandomState> {
+    fn new() -> Self {
+        indexmap::IndexMap::with_hasher(ahash::RandomState::new())
+    }
+
+    fn with_capacity(n: usize) -> Self {
+        indexmap::IndexMap::with_capacity_and_hasher(n, ahash::RandomState::new())
     }
 }

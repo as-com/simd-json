@@ -906,6 +906,9 @@ mod tests_serde {
     use serde_json;
     use value_trait::{Builder, Mutable, StaticNode};
 
+    #[cfg(feature = "preserve_order")]
+    use crate::value::IndexMapHack;
+
     #[test]
     fn empty() {
         let mut d = String::from("");

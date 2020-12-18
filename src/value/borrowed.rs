@@ -27,9 +27,17 @@ mod serialize;
 use crate::cow::Cow;
 use crate::prelude::*;
 use crate::{AlignedBuf, Deserializer, Node, Result, StaticNode};
+#[cfg(not(feature = "preserve_order"))]
 use halfbrown::HashMap;
+#[cfg(feature = "preserve_order")]
+use indexmap::IndexMap;
+#[cfg(feature = "preserve_order")]
+use crate::IndexMapHack;
 use std::fmt;
 use std::ops::{Index, IndexMut};
+
+#[cfg(feature = "preserve_order")]
+type HashMap<K, V> = IndexMap<K, V, ahash::RandomState>;
 
 /// Representation of a JSON object
 pub type Object<'value> = HashMap<Cow<'value, str>, Value<'value>>;
@@ -374,7 +382,10 @@ impl<'de> BorrowDeserializer<'de> {
         // element so we eat this
         for _ in 0..len {
             if let Node::String(key) = unsafe { self.0.next_() } {
+                #[cfg(not(feature = "preserve_order"))]
                 res.insert_nocheck(key.into(), self.parse());
+                #[cfg(feature = "preserve_order")]
+                res.insert(key.into(), self.parse());
             } else {
                 unreachable!()
             }

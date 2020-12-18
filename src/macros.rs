@@ -295,6 +295,8 @@ macro_rules! json_internal {
 
     ({ $($tt:tt)+ }) => {
         $crate::value::owned::Value::from({
+            #[cfg(feature = "preserve_order")]
+            use $crate::value::IndexMapHack;
             let mut object = $crate::value::owned::Object::new();
             json_internal!(@object object () ($($tt)+) ($($tt)+));
             object
@@ -653,7 +655,7 @@ mod test {
     #[cfg(feature = "serde_impl")]
     #[test]
     fn obj() {
-        use halfbrown::hashmap;
+        use halfbrown::hashmap;        
         let v: OwnedValue = json!(hashmap! {"test" => 1});
         assert_eq!(OwnedValue::from(hashmap! {"test".into() => 1.into()}), v);
         let v: OwnedValue = json!({"test": 1});

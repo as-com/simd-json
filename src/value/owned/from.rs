@@ -249,3 +249,22 @@ impl From<std::collections::HashMap<String, Value>> for Value {
         Self::from(v.into_iter().collect::<Object>())
     }
 }
+
+#[cfg(feature = "preserve_order")]
+impl From<indexmap::IndexMap<String, Value>> for Value {
+    #[inline]
+    #[must_use]
+    fn from(v: indexmap::IndexMap<String, Self>) -> Self {
+        Self::from(v.into_iter().collect::<Object>())
+    }
+}
+
+#[cfg(feature = "preserve_order")]
+impl From<halfbrown::HashMap<String, Value>> for Value {
+    #[inline]
+    #[must_use]
+    fn from(v: halfbrown::HashMap<String, Self>) -> Self {
+        Self::from(v.into_iter().collect::<Object>())
+    }
+}
+

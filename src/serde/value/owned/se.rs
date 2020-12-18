@@ -4,6 +4,9 @@ use crate::{stry, Error, ErrorType, Result, StaticNode};
 use serde::ser::{self, Serialize};
 use serde_ext::ser::{SerializeMap as SerializeMapTrait, SerializeSeq as SerializeSeqTrait};
 
+#[cfg(feature = "preserve_order")]
+use crate::IndexMapHack;
+
 type Impossible<T> = ser::Impossible<T, Error>;
 
 impl Serialize for Value {
