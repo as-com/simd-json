@@ -16,7 +16,7 @@ halfbrown = "0.1"
 indexmap = { version = "1.6", optional = true }
 ahash = { version = "0.6", optional = true }
 # value-trait = "0.1.10"
-value-trait = { path = "../value-trait" }
+value-trait = { git = "https://github.com/as-com/value-trait.git", rev = "b5fce7f7e0661186f639b1a668916808617381da" }
 
 # serde compatibilty
 serde = { version = "1", features = ["derive"], optional = true}
