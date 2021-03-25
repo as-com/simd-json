@@ -12,9 +12,9 @@ documentation = "https://docs.rs/simd-json"
 
 [dependencies]
 beef = { version = "0.4", optional = true }
-halfbrown = { git = "https://github.com/as-com/halfbrown.git", rev = "8cc785e82df1c18d91478252a6d294752ea81a32" }
+halfbrown = { git = "https://github.com/as-com/halfbrown.git", branch = "master" }
 # value-trait = "0.1.10"
-value-trait = { git = "https://github.com/as-com/value-trait.git", rev = "e70afb6fbc5f7234292886a82f7d65b051f96fd9" }
+value-trait = { git = "https://github.com/as-com/value-trait.git", branch = "main" }
 
 # serde compatibilty
 serde = { version = "1", features = ["derive"], optional = true}
