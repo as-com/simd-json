@@ -1,7 +1,7 @@
 #![deny(warnings)]
 #![cfg_attr(target_feature = "neon", feature(stdsimd,))]
 #![cfg_attr(feature = "hints", feature(core_intrinsics))]
-#![forbid(warnings)]
+#![deny(warnings)]
 #![warn(unused_extern_crates)]
 #![deny(
     clippy::all,
@@ -159,11 +159,11 @@ pub use crate::sse42::deser::*;
 #[cfg(all(target_feature = "sse4.2", not(target_feature = "avx2")))]
 use crate::sse42::stage1::{SimdInput, SIMDINPUT_LENGTH, SIMDJSON_PADDING};
 
-#[cfg(all(target_feature = "neon", feature = "neon"))]
+#[cfg(target_feature = "neon")]
 mod neon;
-#[cfg(all(target_feature = "neon", feature = "neon"))]
+#[cfg(target_feature = "neon")]
 pub use crate::neon::deser::*;
-#[cfg(all(target_feature = "neon", feature = "neon"))]
+#[cfg(target_feature = "neon")]
 use crate::neon::stage1::{SimdInput, SIMDINPUT_LENGTH, SIMDJSON_PADDING};
 
 // We import this as generics
@@ -231,7 +231,7 @@ use std::ptr::NonNull;
 /// # Errors
 ///
 /// Will return `Err` if `s` is invalid JSON.
-pub fn to_tape<'input>(s: &'input mut [u8]) -> Result<Vec<Node<'input>>> {
+pub fn to_tape(s: &mut [u8]) -> Result<Vec<Node>> {
     Deserializer::from_slice(s).map(Deserializer::into_tape)
 }
 
@@ -399,7 +399,7 @@ impl<'de> Deserializer<'de> {
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     fn error(error: ErrorType) -> Error {
-        Deserializer::raw_error(0, '?', error)
+        Self::raw_error(0, '?', error)
     }
 
     fn raw_error(idx: usize, c: char, error: ErrorType) -> Error {
@@ -419,7 +419,7 @@ impl<'de> Deserializer<'de> {
             string_buffer.set_len(len + SIMDJSON_PADDING);
         };
 
-        Deserializer::from_slice_with_buffer(input, &mut string_buffer)
+        Self::from_slice_with_buffer(input, &mut string_buffer)
     }
 
     /// Creates a serializer from a mutable slice of bytes using a temporary
@@ -456,7 +456,7 @@ impl<'de> Deserializer<'de> {
         let len = input.len();
 
         if len > std::u32::MAX as usize {
-            return Err(Deserializer::error(ErrorType::InputTooLarge));
+            return Err(Self::error(ErrorType::InputTooLarge));
         }
 
         if input_buffer.capacity() < len + SIMDJSON_PADDING * 2 {
@@ -473,7 +473,7 @@ impl<'de> Deserializer<'de> {
         };
 
         let s1_result: std::result::Result<Vec<u32>, ErrorType> =
-            unsafe { Deserializer::find_structural_bits(&input_buffer) };
+            unsafe { Self::find_structural_bits(&input_buffer) };
 
         let structural_indexes = match s1_result {
             Ok(i) => i,
@@ -482,10 +482,10 @@ impl<'de> Deserializer<'de> {
             }
         };
 
-        let tape =
-            Deserializer::build_tape(input, &input_buffer, string_buffer, &structural_indexes)?;
+        let tape: Vec<Node> =
+            Self::build_tape(input, &input_buffer, string_buffer, &structural_indexes)?;
 
-        Ok(Deserializer { tape, idx: 0 })
+        Ok(Self { tape, idx: 0 })
     }
 
     #[cfg(feature = "serde_impl")]
@@ -496,6 +496,11 @@ impl<'de> Deserializer<'de> {
 
     /// Same as next() but we pull out the check so we don't need to
     /// stry every time. Use this only if you know the next element exists!
+    ///
+    /// # Safety
+    ///
+    /// This function is not safe to use, it is meant for internal use
+    /// where it's know the tape isn't finished.
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     pub unsafe fn next_(&mut self) -> Node<'de> {
         self.idx += 1;
@@ -636,7 +641,7 @@ impl<'de> Deserializer<'de> {
         // a valid JSON file cannot have zero structural indexes - we should have
         // found something (note that we compare to 1 as we always add the root!)
         if structural_indexes.len() == 1 {
-            return Err(ErrorType::EOF);
+            return Err(ErrorType::Eof);
         }
 
         if structural_indexes.last() > Some(&(len as u32)) {
@@ -648,7 +653,7 @@ impl<'de> Deserializer<'de> {
         }
 
         if SimdInput::check_utf8_errors(&state) {
-            Err(ErrorType::InvalidUTF8)
+            Err(ErrorType::InvalidUtf8)
         } else {
             Ok(structural_indexes)
         }

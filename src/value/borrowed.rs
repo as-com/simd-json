@@ -30,6 +30,7 @@ use crate::{AlignedBuf, Deserializer, Node, Result, StaticNode};
 use halfbrown::HashMap;
 use std::fmt;
 use std::ops::{Index, IndexMut};
+use value_trait::ValueAccess;
 
 /// Representation of a JSON object
 pub type Object<'value> = HashMap<Cow<'value, str>, Value<'value>>;
@@ -42,7 +43,7 @@ pub type Object<'value> = HashMap<Cow<'value, str>, Value<'value>>;
 /// # Errors
 ///
 /// Will return `Err` if `s` is invalid JSON.
-pub fn to_value<'value>(s: &'value mut [u8]) -> Result<Value<'value>> {
+pub fn to_value(s: &mut [u8]) -> Result<Value> {
     match Deserializer::from_slice(s) {
         Ok(de) => Ok(BorrowDeserializer::from_deserializer(de).parse()),
         Err(e) => Err(e),
@@ -89,18 +90,28 @@ impl<'value> Value<'value> {
     #[inline]
     #[must_use]
     pub fn into_static(self) -> Value<'static> {
-        unsafe {
-            use std::mem::transmute;
-            let r = match self {
-                Self::String(s) => Self::String(s.into_owned().into()),
-                Self::Array(arr) => arr.into_iter().map(Value::into_static).collect(),
-                Self::Object(obj) => obj
-                    .into_iter()
-                    .map(|(k, v)| (Cow::from(k.into_owned()), v.into_static()))
-                    .collect(),
-                _ => self,
-            };
-            transmute(r)
+        match self {
+            // Ensure strings are static by turing the cow into a 'static
+            // This cow has static lifetime as it's owned, this information however is lost
+            // by the borrow checker so we need to transmute it to static.
+            // This invariant is guaranteed by the implementation of the cow, cloning an owned
+            // value will produce a owned value again see:
+            // https://docs.rs/beef/0.4.4/src/beef/generic.rs.html#379-391
+            Self::String(s) => unsafe {
+                std::mem::transmute::<Value<'value>, Value<'static>>(Self::String(Cow::from(
+                    s.to_string(),
+                )))
+            },
+            // For an array we turn every value into a static
+            Self::Array(arr) => arr.into_iter().map(Value::into_static).collect(),
+            // For an object, we turn all keys into owned Cows and all values into 'static Values
+            Self::Object(obj) => obj
+                .into_iter()
+                .map(|(k, v)| (Cow::from(k.into_owned()), v.into_static()))
+                .collect(),
+
+            // Static nodes are always static
+            Value::Static(s) => Value::Static(s),
         }
     }
 
@@ -109,18 +120,28 @@ impl<'value> Value<'value> {
     #[inline]
     #[must_use]
     pub fn clone_static(&self) -> Value<'static> {
-        unsafe {
-            use std::mem::transmute;
-            let r = match self {
-                Self::String(s) => Self::String(Cow::from(s.to_string())),
-                Self::Array(arr) => arr.iter().map(Value::clone_static).collect(),
-                Self::Object(obj) => obj
-                    .iter()
-                    .map(|(k, v)| (Cow::from(k.to_string()), v.clone_static()))
-                    .collect(),
-                Self::Static(s) => Self::Static(*s),
-            };
-            transmute(r)
+        match self {
+            // Ensure strings are static by turing the cow into a 'static
+            // This cow has static lifetime as it's owned, this information however is lost
+            // by the borrow checker so we need to transmute it to static.
+            // This invariant is guaranteed by the implementation of the cow, cloning an owned
+            // value will produce a owned value again see:
+            // https://docs.rs/beef/0.4.4/src/beef/generic.rs.html#379-391
+            Self::String(s) => unsafe {
+                std::mem::transmute::<Value<'value>, Value<'static>>(Self::String(Cow::from(
+                    s.to_string(),
+                )))
+            },
+            // For an array we turn every value into a static
+            Self::Array(arr) => arr.iter().cloned().map(Value::into_static).collect(),
+            // For an object, we turn all keys into owned Cows and all values into 'static Values
+            Self::Object(obj) => obj
+                .iter()
+                .map(|(k, v)| (Cow::from(k.to_string()), v.clone_static()))
+                .collect(),
+
+            // Static nodes are always static
+            Value::Static(s) => Value::Static(*s),
         }
     }
 }
@@ -154,7 +175,7 @@ impl<'value> Mutable for Value<'value> {
     }
     #[inline]
     #[must_use]
-    fn as_object_mut(&mut self) -> Option<&mut HashMap<<Self as ValueTrait>::Key, Self>> {
+    fn as_object_mut(&mut self) -> Option<&mut HashMap<<Self as ValueAccess>::Key, Self>> {
         match self {
             Self::Object(m) => Some(m),
             _ => None,
@@ -163,10 +184,6 @@ impl<'value> Mutable for Value<'value> {
 }
 
 impl<'value> ValueTrait for Value<'value> {
-    type Key = Cow<'value, str>;
-    type Array = Vec<Self>;
-    type Object = HashMap<Self::Key, Self>;
-
     #[inline]
     #[must_use]
     fn value_type(&self) -> ValueType {
@@ -183,6 +200,13 @@ impl<'value> ValueTrait for Value<'value> {
     fn is_null(&self) -> bool {
         matches!(self, Self::Static(StaticNode::Null))
     }
+}
+
+impl<'value> ValueAccess for Value<'value> {
+    type Target = Self;
+    type Key = Cow<'value, str>;
+    type Array = Vec<Self>;
+    type Object = HashMap<Self::Key, Self>;
 
     #[inline]
     #[must_use]

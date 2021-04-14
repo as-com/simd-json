@@ -38,7 +38,7 @@ pub(crate) fn handle_unicode_codepoint(
     let mut src_offset = 6;
     // check for low surrogate for characters outside the Basic
     // Multilingual Plane.
-    if code_point >= 0xd800 && code_point < 0xdc00 {
+    if (0xd800..0xdc00).contains(&code_point) {
         if (unsafe { *src_ptr.get_unchecked(0) } != b'\\')
             || unsafe { *src_ptr.get_unchecked(1) } != b'u'
         {
@@ -58,12 +58,12 @@ pub(crate) fn handle_unicode_codepoint(
         let c1 = if let Some(c) = code_point.checked_sub(0xd800) {
             c
         } else {
-            return Err(ErrorType::InvalidUTF8);
+            return Err(ErrorType::InvalidUtf8);
         };
         let c2 = if let Some(c) = code_point_2.checked_sub(0xdc00) {
             c
         } else {
-            return Err(ErrorType::InvalidUTF8);
+            return Err(ErrorType::InvalidUtf8);
         };
         code_point = ((c1 << 10) | c2) + 0x10000;
         src_offset += 6;

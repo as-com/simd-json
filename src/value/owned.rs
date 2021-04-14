@@ -2,7 +2,7 @@
 /// structure fully owned, avoiding lifetimes at the cost of performance.
 /// Access via array indexes is possible:
 /// ```rust
-/// use simd_json::{BorrowedValue, json};
+/// use simd_json::{OwnedValue, json};
 /// use simd_json::prelude::*;
 /// let mut a = json!([1, 2, 3]);
 /// assert_eq!(a[1], 2);
@@ -12,7 +12,7 @@
 ///
 /// Access via object keys is possible as well:
 /// ```rust
-/// use simd_json::{BorrowedValue, json};
+/// use simd_json::{OwnedValue, json};
 /// use simd_json::prelude::*;
 /// let mut a = json!({"key": "not the value"});
 /// assert_eq!(a["key"], "not the value");
@@ -28,6 +28,7 @@ use crate::{AlignedBuf, Deserializer, Node, Result, StaticNode};
 use halfbrown::HashMap;
 use std::fmt;
 use std::ops::{Index, IndexMut};
+use value_trait::ValueAccess;
 
 /// Representation of a JSON object
 pub type Object = HashMap<String, Value>;
@@ -35,7 +36,7 @@ pub type Object = HashMap<String, Value>;
 /// Parses a slice of bytes into a Value dom. This function will
 /// rewrite the slice to de-escape strings.
 /// We do not keep any references to the raw data but re-allocate
-/// owned memory whereever required thus returning a value without
+/// owned memory wherever required thus returning a value without
 /// a lifetime.
 ///
 /// # Errors
@@ -113,7 +114,7 @@ impl Mutable for Value {
     }
     #[inline]
     #[must_use]
-    fn as_object_mut(&mut self) -> Option<&mut HashMap<<Self as ValueTrait>::Key, Self>> {
+    fn as_object_mut(&mut self) -> Option<&mut HashMap<Self::Key, Self>> {
         match self {
             Self::Object(m) => Some(m),
             _ => None,
@@ -122,10 +123,6 @@ impl Mutable for Value {
 }
 
 impl ValueTrait for Value {
-    type Key = String;
-    type Array = Vec<Self>;
-    type Object = HashMap<Self::Key, Self>;
-
     #[inline]
     #[must_use]
     fn value_type(&self) -> ValueType {
@@ -136,12 +133,18 @@ impl ValueTrait for Value {
             Self::Object(_) => ValueType::Object,
         }
     }
-
     #[inline]
     #[must_use]
     fn is_null(&self) -> bool {
         matches!(self, Self::Static(StaticNode::Null))
     }
+}
+
+impl ValueAccess for Value {
+    type Target = Value;
+    type Key = String;
+    type Array = Vec<Self>;
+    type Object = HashMap<Self::Key, Self>;
 
     #[inline]
     #[must_use]
@@ -916,7 +919,6 @@ mod test {
         let v: Value = Value::from_iter(vec!["a", "b"]);
         assert_eq!(v, &["a", "b"][..]);
     }
-    #[test]
     #[test]
     fn test_hashmap_cmp() {
         use std::iter::FromIterator;
