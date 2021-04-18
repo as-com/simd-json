@@ -153,7 +153,7 @@ pub struct Error {
 
 impl Error {
     pub(crate) fn new(index: usize, character: char, error: ErrorType) -> Self {
-        panic!("index {:?} character {:?} error {:?}", index, character, error);
+        panic!();
         Self {
             index,
             character,
@@ -163,7 +163,7 @@ impl Error {
     /// Create a generic error
     #[must_use = "Error creation"]
     pub fn generic(t: ErrorType) -> Self {
-        panic!("{:?}", t);
+        panic!();
         Self {
             index: 0,
             character: '💩', //this is the poop emoji
