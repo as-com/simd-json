@@ -477,56 +477,63 @@ impl<'de> Deserializer<'de> {
                             depth += 1;
                             cnt = 1;
                             {
-                                if i<structural_indexes.len(){
-                                  idx =  *{
+                                if i < structural_indexes.len() {
+                                    idx = *{ unsafe { structural_indexes.get_unchecked(i) } }
+                                        as usize;
+                                    i += 1;
+                                    c = *{ unsafe { input2.get_unchecked(idx) } };
+                                } else {
                                     unsafe {
-                                      structural_indexes.get_unchecked(i)
-                                    }
-                                  }as usize;
-                                  i+=1;
-                                  c =  *{
-                                    unsafe {
-                                      input2.get_unchecked(idx)
-                                    }
-                                  };
-                                  
-                                }else {
-                                  unsafe {
-                                    res.set_len(r_i);
-                                    
-                                  };
-                                  return Err(Error::new(idx,c as char,ErrorType::Syntax));
-                                  ;
-                                  
+                                        res.set_len(r_i);
+                                    };
+                                    return Err(Error::new(idx, c as char, ErrorType::Syntax));
                                 };
                                 match c {
-                                  b'"' => {
-                                    insert_res!(Node::String(s2try!(Self::parse_str_(input, &input2,buffer,idx))));
-                                    ;
-                                    {
-                                      state = ObjectKey;
-                                      continue;
-                                      
+                                    b'"' => {
+                                        unsafe {
+                                            std::ptr::write(
+                                                { unsafe { res.get_unchecked_mut(r_i) } },
+                                                Node::String(
+                                                    match Self::parse_str_(
+                                                        input, &input2, buffer, idx,
+                                                    ) {
+                                                        ::std::result::Result::Ok(val) => val,
+                                                        ::std::result::Result::Err(err) => {
+                                                            unsafe {
+                                                                res.set_len(r_i);
+                                                            };
+                                                            println!("{:?}", err);
+                                                            return ::std::result::Result::Err(err);
+                                                        }
+                                                    },
+                                                ),
+                                            );
+                                            r_i += 1;
+                                        };
+                                        {
+                                            state = ObjectKey;
+                                            continue;
+                                        }
                                     }
-                                  }b'}' => {
-                                    cnt = 0;
-                                    {
-                                      state = ScopeEnd;
-                                      continue;
-                                      
-                                    };
-                                    
-                                  }_c => {
-                                    unsafe {
-                                      res.set_len(r_i);
-                                      
-                                    };
-                                    return Err(Error::new(idx,c as char,ErrorType::ExpectedObjectContent));
-                                    ;
-                                    
-                                  }
+                                    b'}' => {
+                                        cnt = 0;
+                                        {
+                                            state = ScopeEnd;
+                                            continue;
+                                        };
+                                    }
+                                    _c => {
+                                        unsafe {
+                                            res.set_len(r_i);
+                                        };
+                                        return Err(Error::new(
+                                            idx,
+                                            c as char,
+                                            ErrorType::ExpectedObjectContent,
+                                        ));
+                                    }
                                 }
-                              }
+                            }
                         }
                         b'[' => {
                             unsafe {
