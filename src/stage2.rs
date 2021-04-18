@@ -476,7 +476,57 @@ impl<'de> Deserializer<'de> {
                             insert_res!(Node::Object(0, 0));
                             depth += 1;
                             cnt = 1;
-                            object_begin!();
+                            {
+                                if i<structural_indexes.len(){
+                                  idx =  *{
+                                    unsafe {
+                                      structural_indexes.get_unchecked(i)
+                                    }
+                                  }as usize;
+                                  i+=1;
+                                  c =  *{
+                                    unsafe {
+                                      input2.get_unchecked(idx)
+                                    }
+                                  };
+                                  
+                                }else {
+                                  unsafe {
+                                    res.set_len(r_i);
+                                    
+                                  };
+                                  return Err(Error::new(idx,c as char,ErrorType::Syntax));
+                                  ;
+                                  
+                                };
+                                match c {
+                                  b'"' => {
+                                    insert_res!(Node::String(s2try!(Self::parse_str_(input, &input2,buffer,idx))));
+                                    ;
+                                    {
+                                      state = ObjectKey;
+                                      continue;
+                                      
+                                    }
+                                  }b'}' => {
+                                    cnt = 0;
+                                    {
+                                      state = ScopeEnd;
+                                      continue;
+                                      
+                                    };
+                                    
+                                  }_c => {
+                                    unsafe {
+                                      res.set_len(r_i);
+                                      
+                                    };
+                                    return Err(Error::new(idx,c as char,ErrorType::ExpectedObjectContent));
+                                    ;
+                                    
+                                  }
+                                }
+                              }
                         }
                         b'[' => {
                             unsafe {
