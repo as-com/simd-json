@@ -1,22 +1,15 @@
-#![allow(dead_code)]
-use crate::utf8check::Utf8Check;
-
-use crate::{
-    static_cast_i32, static_cast_i64, static_cast_u32, ProcessedUtfBytes, Stage1Parse,
-    Utf8CheckingState,
-};
+use crate::{static_cast_i32, static_cast_u32, Stage1Parse};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::{
-    __m128i, _mm_add_epi32, _mm_and_si128, _mm_clmulepi64_si128, _mm_cmpeq_epi8, _mm_cmpgt_epi8,
-    _mm_cvtsi128_si64, _mm_loadu_si128, _mm_max_epu8, _mm_movemask_epi8, _mm_or_si128,
-    _mm_set1_epi8, _mm_set_epi32, _mm_set_epi64x, _mm_setr_epi8, _mm_setzero_si128,
-    _mm_shuffle_epi8, _mm_srli_epi32, _mm_storeu_si128, _mm_testz_si128,
+    __m128i, _mm_add_epi32, _mm_and_si128, _mm_cmpeq_epi8, _mm_cmpgt_epi8, _mm_loadu_si128,
+    _mm_max_epu8, _mm_movemask_epi8, _mm_or_si128, _mm_set1_epi8, _mm_set_epi32, _mm_setr_epi8,
+    _mm_setzero_si128, _mm_shuffle_epi8, _mm_srli_epi32, _mm_storeu_si128, _mm_testz_si128,
 };
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m128i, _mm_add_epi32, _mm_and_si128, _mm_clmulepi64_si128, _mm_cmpeq_epi8, _mm_cvtsi128_si64,
-    _mm_loadu_si128, _mm_max_epu8, _mm_movemask_epi8, _mm_set1_epi8, _mm_set_epi32, _mm_set_epi64x,
-    _mm_setr_epi8, _mm_setzero_si128, _mm_shuffle_epi8, _mm_srli_epi32, _mm_storeu_si128,
+    __m128i, _mm_add_epi32, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_max_epu8,
+    _mm_movemask_epi8, _mm_set1_epi8, _mm_set_epi32, _mm_setr_epi8, _mm_setzero_si128,
+    _mm_shuffle_epi8, _mm_srli_epi32, _mm_storeu_si128,
 };
 
 use std::mem;
@@ -61,13 +54,14 @@ impl SimdInput {
 
 impl Stage1Parse<__m128i> for SimdInput {
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
-    fn new_utf8_checking_state() -> Utf8CheckingState<__m128i> {
-        ProcessedUtfBytes::<__m128i>::default()
-    }
-
-    #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[cfg(target_feature = "pclmulqdq")]
     #[allow(clippy::cast_sign_loss)]
     fn compute_quote_mask(quote_bits: u64) -> u64 {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{_mm_clmulepi64_si128, _mm_cvtsi128_si64, _mm_set_epi64x};
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{_mm_clmulepi64_si128, _mm_cvtsi128_si64, _mm_set_epi64x};
+
         unsafe {
             _mm_cvtsi128_si64(_mm_clmulepi64_si128(
                 _mm_set_epi64x(0, static_cast_i64!(quote_bits)),
@@ -77,14 +71,18 @@ impl Stage1Parse<__m128i> for SimdInput {
         }
     }
 
-    #[cfg_attr(not(feature = "no-inline"), inline(always))]
-    fn check_utf8(&self, state: &mut Utf8CheckingState<__m128i>) {
-        unsafe {
-            ProcessedUtfBytes::<__m128i>::check_bytes(self.v0, state);
-            ProcessedUtfBytes::<__m128i>::check_bytes(self.v1, state);
-            ProcessedUtfBytes::<__m128i>::check_bytes(self.v2, state);
-            ProcessedUtfBytes::<__m128i>::check_bytes(self.v3, state);
+    #[cfg(not(target_feature = "pclmulqdq"))]
+    fn compute_quote_mask(mut quote_bits: u64) -> u64 {
+        #[allow(clippy::cast_sign_loss)]
+        let b = -1_i64 as u64;
+        let mut prod = 0;
+
+        while quote_bits != 0 {
+            prod ^= b.wrapping_mul(quote_bits & 0_u64.wrapping_sub(quote_bits));
+            quote_bits &= quote_bits.wrapping_sub(1);
         }
+
+        prod
     }
 
     /// a straightforward comparison of a mask against input
@@ -282,11 +280,6 @@ impl Stage1Parse<__m128i> for SimdInput {
             }
             l += 4;
         }
-    }
-
-    #[cfg_attr(not(feature = "no-inline"), inline(always))]
-    fn check_utf8_errors(state: &Utf8CheckingState<__m128i>) -> bool {
-        unsafe { ProcessedUtfBytes::<__m128i>::has_error(state.error) }
     }
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
