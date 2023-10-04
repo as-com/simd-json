@@ -1,27 +1,28 @@
 #![deny(warnings)]
-#![cfg_attr(target_feature = "neon", feature(stdsimd,))]
 #![cfg_attr(feature = "hints", feature(core_intrinsics))]
-#![deny(warnings)]
 #![warn(unused_extern_crates)]
 #![deny(
     clippy::all,
     clippy::unwrap_used,
     clippy::unnecessary_unwrap,
-    clippy::pedantic
+    clippy::pedantic,
+    missing_docs
 )]
 // We might want to revisit inline_always
-#![allow(clippy::module_name_repetitions, clippy::inline_always)]
-#![deny(missing_docs)]
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::inline_always,
+    clippy::arc_with_non_send_sync,
+    renamed_and_removed_lints
+)]
 
 //! simd-json is a rust port of the simdjson c++ library. It follows
 //! most of the design closely with a few exceptions to make it better
 //! fit into the rust ecosystem.
 //!
-//! Note: by default rustc will compile for compatibility, not
-//! performance, to take advantage of the simd part of simd json. You
-//! have to use a native cpu target on a avx2 capable host system. An
-//! example how to do this can be found in the `.cargo` directory on
-//! [github](https://github.com/simd-lite/simd-json).
+//! Note: On `x86` it will select the best SIMD featureset
+//! (`avx2`, or `sse4.2`) during runtime. If `simd-json` is compiled
+//! with SIMD support, it will disable runtime detection.
 //!
 //! ## Goals
 //!
@@ -54,7 +55,7 @@
 //!
 //! ### `swar-number-parsing` (default)
 //!
-//! Enables a parsing method that will parse 8 digests at a time for
+//! Enables a parsing method that will parse 8 digits at a time for
 //! floats - this is a common pattern but comes as a slight perf hit
 //! if all the floats have less then 8 digits.
 //!
@@ -139,78 +140,46 @@ mod charutils;
 mod macros;
 mod error;
 mod numberparse;
+mod safer_unchecked;
 mod stringparse;
+
+use safer_unchecked::GetSaferUnchecked;
 
 /// Reexport of Cow
 pub mod cow;
 
-#[cfg(target_feature = "avx2")]
+/// The maximum padding size required by and SIMD implementation
+pub const SIMDJSON_PADDING: usize = 32; // take upper limit mem::size_of::<__m256i>()
+/// It's 64 for all (Is this correct?)
+pub const SIMDINPUT_LENGTH: usize = 64;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 mod avx2;
-#[cfg(target_feature = "avx2")]
-pub use crate::avx2::deser::*;
-#[cfg(target_feature = "avx2")]
-use crate::avx2::stage1::{SimdInput, SIMDINPUT_LENGTH, SIMDJSON_PADDING};
-#[cfg(target_feature = "avx2")]
-use simdutf8::basic::imp::x86::avx2::ChunkedUtf8ValidatorImp;
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+pub(crate) use crate::avx2::stage1::SimdInputAVX;
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+use simdutf8::basic::imp::x86::avx2::ChunkedUtf8ValidatorImp as ChunkedUtf8ValidatorImpAVX2;
 
-#[cfg(all(target_feature = "sse4.2", not(target_feature = "avx2")))]
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 mod sse42;
-#[cfg(all(target_feature = "sse4.2", not(target_feature = "avx2")))]
-pub use crate::sse42::deser::*;
-#[cfg(all(target_feature = "sse4.2", not(target_feature = "avx2")))]
-use crate::sse42::stage1::{SimdInput, SIMDINPUT_LENGTH, SIMDJSON_PADDING};
-#[cfg(all(target_feature = "sse4.2", not(target_feature = "avx2")))]
-use simdutf8::basic::imp::x86::sse42::ChunkedUtf8ValidatorImp;
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+pub(crate) use crate::sse42::stage1::SimdInputSSE;
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+use simdutf8::basic::imp::x86::sse42::ChunkedUtf8ValidatorImp as ChunkedUtf8ValidatorImpSSE42;
 
-#[cfg(target_feature = "neon")]
+#[cfg(target_arch = "aarch64")]
 mod neon;
-#[cfg(target_feature = "neon")]
-pub use crate::neon::deser::*;
-#[cfg(target_feature = "neon")]
-use crate::neon::stage1::{SimdInput, SIMDINPUT_LENGTH, SIMDJSON_PADDING};
-#[cfg(target_feature = "neon")]
-use simdutf8::basic::imp::aarch64::neon::ChunkedUtf8ValidatorImp;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use crate::neon::stage1::SimdInputNEON;
+#[cfg(target_arch = "aarch64")]
+use simdutf8::basic::imp::aarch64::neon::ChunkedUtf8ValidatorImp as ChunkedUtf8ValidatorImpNEON;
 
-// We import this as generics
-#[cfg(all(not(any(
-    target_feature = "sse4.2",
-    target_feature = "avx2",
-    target_feature = "neon"
-))))]
-mod sse42;
-#[cfg(all(not(any(
-    target_feature = "sse4.2",
-    target_feature = "avx2",
-    target_feature = "neon"
-))))]
-#[cfg(all(not(any(
-    target_feature = "sse4.2",
-    target_feature = "avx2",
-    target_feature = "neon"
-))))]
-pub use crate::sse42::deser::*;
-#[cfg(all(not(any(
-    target_feature = "sse4.2",
-    target_feature = "avx2",
-    target_feature = "neon"
-))))]
-use crate::sse42::stage1::{SimdInput, SIMDINPUT_LENGTH, SIMDJSON_PADDING};
-#[cfg(all(not(any(
-    target_feature = "sse4.2",
-    target_feature = "avx2",
-    target_feature = "neon"
-))))]
-use simdutf8::basic::imp::x86::sse42::ChunkedUtf8ValidatorImp;
-
-#[cfg(all(
-    not(feature = "allow-non-simd"),
-    not(any(
-        target_feature = "sse4.2",
-        target_feature = "avx2",
-        target_feature = "neon"
-    ))
-))]
-fn please_compile_with_a_simd_compatible_cpu_setting_read_the_simdjsonrs_readme() -> ! {}
+#[cfg(target_feature = "simd128")]
+mod simd128;
+#[cfg(target_feature = "simd128")]
+pub(crate) use crate::simd128::stage1::SimdInput128;
+#[cfg(target_feature = "simd128")]
+use simdutf8::basic::imp::wasm32::simd128::ChunkedUtf8ValidatorImp as ChunkedUtf8ValidatorImpSIMD128;
 
 mod stage2;
 /// simd-json JSON-DOM value
@@ -247,15 +216,17 @@ pub fn to_tape(s: &mut [u8]) -> Result<Vec<Node>> {
 }
 
 pub(crate) trait Stage1Parse<T> {
-    fn compute_quote_mask(quote_bits: u64) -> u64;
+    unsafe fn new(ptr: &[u8]) -> Self;
 
-    fn cmp_mask_against_input(&self, m: u8) -> u64;
+    unsafe fn compute_quote_mask(quote_bits: u64) -> u64;
 
-    fn unsigned_lteq_against_input(&self, maxval: T) -> u64;
+    unsafe fn cmp_mask_against_input(&self, m: u8) -> u64;
 
-    fn find_whitespace_and_structurals(&self, whitespace: &mut u64, structurals: &mut u64);
+    unsafe fn unsigned_lteq_against_input(&self, maxval: T) -> u64;
 
-    fn flatten_bits(base: &mut Vec<u32>, idx: u32, bits: u64);
+    unsafe fn find_whitespace_and_structurals(&self, whitespace: &mut u64, structurals: &mut u64);
+
+    unsafe fn flatten_bits(base: &mut Vec<u32>, idx: u32, bits: u64);
 
     // return both the quote mask (which is a half-open mask that covers the first
     // quote in an unescaped quote pair and everything in the quote pair) and the
@@ -312,7 +283,7 @@ pub(crate) trait Stage1Parse<T> {
         const EVEN_BITS: u64 = 0x5555_5555_5555_5555;
         const ODD_BITS: u64 = !EVEN_BITS;
 
-        let bs_bits: u64 = self.cmp_mask_against_input(b'\\');
+        let bs_bits: u64 = unsafe { self.cmp_mask_against_input(b'\\') };
         let start_edges: u64 = bs_bits & !(bs_bits << 1);
         // flip lowest if we have an odd-length run at the end of the prior
         // iteration
@@ -330,7 +301,7 @@ pub(crate) trait Stage1Parse<T> {
         // push in bit zero as a potential end
         // if we had an odd-numbered run at the
         // end of the previous iteration
-        *prev_iter_ends_odd_backslash = if iter_ends_odd_backslash { 0x1 } else { 0x0 };
+        *prev_iter_ends_odd_backslash = u64::from(iter_ends_odd_backslash);
         let even_carry_ends: u64 = even_carries & !bs_bits;
         let odd_carry_ends: u64 = odd_carries & !bs_bits;
         let even_start_odd_end: u64 = even_carry_ends & ODD_BITS;
@@ -381,8 +352,8 @@ pub(crate) trait Stage1Parse<T> {
         structurals
     }
 
-    fn fill_s8(n: i8) -> T;
-    fn zero() -> T;
+    unsafe fn fill_s8(n: i8) -> T;
+    unsafe fn zero() -> T;
 }
 
 /// Deserializer struct to deserialize a JSON
@@ -394,6 +365,61 @@ pub struct Deserializer<'de> {
 }
 
 impl<'de> Deserializer<'de> {
+    #[inline]
+    #[cfg(not(any(feature = "avx2", feature = "sse42")))]
+    pub(crate) fn parse_str_<'invoke>(
+        input: *mut u8,
+        data: &'invoke [u8],
+        buffer: &'invoke mut [u8],
+        idx: usize,
+    ) -> Result<&'de str> {
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        {
+            let cell = std::cell::OnceCell::new();
+            let avx_support: &bool = cell.get_or_init(|| std::is_x86_feature_detected!("avx2"));
+            if *avx_support {
+                return unsafe { crate::avx2::deser::parse_str_avx(input, data, buffer, idx) };
+            }
+            let cell = std::cell::OnceCell::new();
+            let sse_support: &bool = cell.get_or_init(|| std::is_x86_feature_detected!("sse4.2"));
+            if *sse_support {
+                return unsafe { crate::sse42::deser::parse_str_sse(input, data, buffer, idx) };
+            }
+            Err(Self::error(ErrorType::SimdUnsupported))
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            return crate::neon::deser::parse_str_neon(input, data, buffer, idx);
+        }
+        #[cfg(target_feature = "simd128")]
+        {
+            return crate::simd128::deser::parse_str_simd128(input, data, buffer, idx);
+        }
+    }
+
+    /// To allow inlining
+    #[inline]
+    #[cfg(feature = "avx2")]
+    pub(crate) fn parse_str_<'invoke>(
+        input: *mut u8,
+        data: &'invoke [u8],
+        buffer: &'invoke mut [u8],
+        idx: usize,
+    ) -> std::result::Result<Vec<u32>, ErrorType> {
+        unsafe { crate::avx2::deser::parse_str_avx(input, data, buffer, idx) }
+    }
+
+    #[inline]
+    #[cfg(feature = "sse4.2")]
+    pub(crate) fn parse_str_<'invoke>(
+        input: *mut u8,
+        data: &'invoke [u8],
+        buffer: &'invoke mut [u8],
+        idx: usize,
+    ) -> std::result::Result<Vec<u32>, ErrorType> {
+        unsafe { crate::sse42::deser::parse_str_sse(input, data, buffer, idx) }
+    }
+
     /// Extracts the tape from the Deserializer
     #[must_use]
     pub fn into_tape(self) -> Vec<Node<'de>> {
@@ -402,11 +428,12 @@ impl<'de> Deserializer<'de> {
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     fn error(error: ErrorType) -> Error {
-        Self::raw_error(0, '?', error)
+        Error::new(0, None, error)
     }
 
-    fn raw_error(idx: usize, c: char, error: ErrorType) -> Error {
-        Error::new(idx, c, error)
+    #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    fn error_c(idx: usize, c: char, error: ErrorType) -> Error {
+        Error::new(idx, Some(c), error)
     }
 
     /// Creates a serializer from a mutable slice of bytes
@@ -414,6 +441,7 @@ impl<'de> Deserializer<'de> {
     /// # Errors
     ///
     /// Will return `Err` if `s` is invalid JSON.
+    #[allow(clippy::uninit_vec)]
     pub fn from_slice(input: &'de mut [u8]) -> Result<Self> {
         let len = input.len();
 
@@ -467,16 +495,20 @@ impl<'de> Deserializer<'de> {
         }
 
         unsafe {
-            input_buffer
-                .as_mut_slice()
-                .get_unchecked_mut(..len)
-                .clone_from_slice(input);
-            *(input_buffer.get_unchecked_mut(len)) = 0;
-            input_buffer.set_len(len);
+            std::ptr::copy_nonoverlapping(input.as_ptr(), input_buffer.as_mut_ptr(), len);
+
+            // initialize all remaining bytes
+            // this also ensures we have a 0 to terminate the buffer
+            for i in len..input_buffer.capacity() {
+                std::ptr::write(input_buffer.as_mut_ptr().add(i), 0);
+            }
+
+            // safety: all bytes are initialized
+            input_buffer.set_len(input_buffer.capacity());
         };
 
         let s1_result: std::result::Result<Vec<u32>, ErrorType> =
-            unsafe { Self::find_structural_bits(input_buffer) };
+            unsafe { Self::find_structural_bits(input) };
 
         let structural_indexes = match s1_result {
             Ok(i) => i,
@@ -507,12 +539,74 @@ impl<'de> Deserializer<'de> {
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     pub unsafe fn next_(&mut self) -> Node<'de> {
         self.idx += 1;
-        *self.tape.get_unchecked(self.idx)
+        *self.tape.get_kinda_unchecked(self.idx)
     }
 
-    //#[inline(never)]
+    #[inline]
     #[allow(clippy::cast_possible_truncation)]
+    #[cfg(not(any(feature = "avx2", feature = "sse42")))]
     pub(crate) unsafe fn find_structural_bits(
+        input: &[u8],
+    ) -> std::result::Result<Vec<u32>, ErrorType> {
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        {
+            let cell = std::cell::OnceCell::new();
+            let avx_support: &bool = cell.get_or_init(|| std::is_x86_feature_detected!("avx2"));
+            if *avx_support {
+                return Self::find_structural_bits_avx(input);
+            }
+            let cell = std::cell::OnceCell::new();
+            let sse_support: &bool = cell.get_or_init(|| std::is_x86_feature_detected!("sse4.2"));
+            if *sse_support {
+                return Self::find_structural_bits_sse(input);
+            }
+            panic!("Please run on a simd compatible cpu, read the simdjson README.");
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            return Self::_find_structural_bits::<_, SimdInputNEON, ChunkedUtf8ValidatorImpNEON>(
+                input,
+            );
+        }
+
+        #[cfg(target_feature = "simd128")]
+        {
+            return Self::_find_structural_bits::<_, SimdInput128, ChunkedUtf8ValidatorImpSIMD128>(
+                input,
+            );
+        }
+    }
+
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[target_feature(enable = "avx2")]
+    pub(crate) unsafe fn find_structural_bits_avx(
+        input: &[u8],
+    ) -> std::result::Result<Vec<u32>, ErrorType> {
+        Self::_find_structural_bits::<_, SimdInputAVX, ChunkedUtf8ValidatorImpAVX2>(input)
+    }
+
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[target_feature(enable = "sse4.2")]
+    pub(crate) unsafe fn find_structural_bits_sse(
+        input: &[u8],
+    ) -> std::result::Result<Vec<u32>, ErrorType> {
+        Self::_find_structural_bits::<_, SimdInputSSE, ChunkedUtf8ValidatorImpSSE42>(input)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[cfg(feature = "avx2")]
+    pub(crate) unsafe fn find_structural_bits(
+        input: &[u8],
+    ) -> std::result::Result<Vec<u32>, ErrorType> {
+        Self::_find_structural_bits::<_, SimdInputAVX, ChunkedUtf8ValidatorImpAVX2>(input)
+    }
+
+    #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) unsafe fn _find_structural_bits<K, S: Stage1Parse<K>, C: ChunkedUtf8Validator>(
         input: &[u8],
     ) -> std::result::Result<Vec<u32>, ErrorType> {
         let len = input.len();
@@ -521,7 +615,7 @@ impl<'de> Deserializer<'de> {
         let mut structural_indexes = Vec::with_capacity(len / 6);
         structural_indexes.push(0); // push extra root element
 
-        let mut utf8_validator = ChunkedUtf8ValidatorImp::new();
+        let mut utf8_validator = C::new();
 
         // we have padded the input out to 64 byte multiple with the remainder being
         // zeros
@@ -547,7 +641,7 @@ impl<'de> Deserializer<'de> {
         // expensive carryless multiply in the previous step with this work
         let mut structurals: u64 = 0;
 
-        let lenminus64: usize = if len < 64 { 0 } else { len as usize - 64 };
+        let lenminus64: usize = if len < 64 { 0 } else { len - 64 };
         let mut idx: usize = 0;
         let mut error_mask: u64 = 0; // for unescaped characters within strings (ASCII code points < 0x20)
 
@@ -557,10 +651,10 @@ impl<'de> Deserializer<'de> {
               __builtin_prefetch(buf + idx + 128);
             #endif
              */
-            let chunk = input.get_unchecked(idx..idx + 64);
+            let chunk = input.get_kinda_unchecked(idx..idx + 64);
             utf8_validator.update_from_chunks(chunk);
 
-            let input = SimdInput::new(chunk);
+            let input = S::new(chunk);
             // detect odd sequences of backslashes
             let odd_ends: u64 =
                 input.find_odd_backslash_sequences(&mut prev_iter_ends_odd_backslash);
@@ -578,13 +672,13 @@ impl<'de> Deserializer<'de> {
             // take the previous iterations structural bits, not our current iteration,
             // and flatten
             #[allow(clippy::cast_possible_truncation)]
-            SimdInput::flatten_bits(&mut structural_indexes, idx as u32, structurals);
+            S::flatten_bits(&mut structural_indexes, idx as u32, structurals);
 
             let mut whitespace: u64 = 0;
             input.find_whitespace_and_structurals(&mut whitespace, &mut structurals);
 
             // fixup structurals to reflect quotes and add pseudo-structural characters
-            structurals = SimdInput::finalize_structurals(
+            structurals = S::finalize_structurals(
                 structurals,
                 whitespace,
                 quote_mask,
@@ -601,11 +695,10 @@ impl<'de> Deserializer<'de> {
             let mut tmpbuf: [u8; SIMDINPUT_LENGTH] = [0x20; SIMDINPUT_LENGTH];
             tmpbuf
                 .as_mut_ptr()
-                .copy_from(input.as_ptr().add(idx), len as usize - idx);
-
+                .copy_from(input.as_ptr().add(idx), len - idx);
             utf8_validator.update_from_chunks(&tmpbuf);
 
-            let input = SimdInput::new(&tmpbuf);
+            let input = S::new(&tmpbuf);
 
             // detect odd sequences of backslashes
             let odd_ends: u64 =
@@ -623,13 +716,13 @@ impl<'de> Deserializer<'de> {
 
             // take the previous iterations structural bits, not our current iteration,
             // and flatten
-            SimdInput::flatten_bits(&mut structural_indexes, idx as u32, structurals);
+            S::flatten_bits(&mut structural_indexes, idx as u32, structurals);
 
             let mut whitespace: u64 = 0;
             input.find_whitespace_and_structurals(&mut whitespace, &mut structurals);
 
             // fixup structurals to reflect quotes and add pseudo-structural characters
-            structurals = SimdInput::finalize_structurals(
+            structurals = S::finalize_structurals(
                 structurals,
                 whitespace,
                 quote_mask,
@@ -643,7 +736,7 @@ impl<'de> Deserializer<'de> {
             return Err(ErrorType::Syntax);
         }
         // finally, flatten out the remaining structurals from the last iteration
-        SimdInput::flatten_bits(&mut structural_indexes, idx as u32, structurals);
+        S::flatten_bits(&mut structural_indexes, idx as u32, structurals);
 
         // a valid JSON file cannot have zero structural indexes - we should have
         // found something (note that we compare to 1 as we always add the root!)
@@ -705,14 +798,15 @@ impl AlignedBuf {
         }
     }
 
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.inner.as_ptr()
+    }
+
     fn capacity_overflow() -> ! {
         panic!("capacity overflow");
     }
     fn capacity(&self) -> usize {
         self.capacity
-    }
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.inner.as_ptr(), self.len) }
     }
     unsafe fn set_len(&mut self, n: usize) {
         assert!(
@@ -749,61 +843,123 @@ impl DerefMut for AlignedBuf {
 #[cfg(test)]
 mod tests {
 
-    #![allow(clippy::unnecessary_operation, clippy::non_ascii_literal)]
-    use super::{owned::Value, to_borrowed_value, to_owned_value, Deserializer};
+    use super::to_borrowed_value;
+    use super::{owned::Value, to_owned_value, Deserializer};
     use crate::tape::Node;
+    #[cfg(not(target_arch = "wasm32"))]
     use proptest::prelude::*;
-    use value_trait::{StaticNode, Writable};
+    #[cfg(not(target_arch = "wasm32"))]
+    use value_trait::StaticNode;
+    use value_trait::Writable;
+
+    #[cfg(not(feature = "approx-number-parsing"))]
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn alligned_number_parse() {
+        let str = "9521.824380305317";
+        let mut slice = str.as_bytes().to_owned();
+        let value: crate::BorrowedValue<'_> =
+            crate::to_borrowed_value(&mut slice).expect("failed to parse");
+        assert_eq!(value, 9_521.824_380_305_317);
+    }
 
     #[test]
     fn test_send_sync() {
         struct TestStruct<T: Sync + Send>(T);
-
-        let _ = TestStruct(super::AlignedBuf::with_capacity(0));
-
-        assert!(true)
+        #[allow(clippy::let_underscore_drop)] // test
+        let _: TestStruct<_> = TestStruct(super::AlignedBuf::with_capacity(0));
     }
 
     #[test]
     fn count1() {
         let mut d = String::from("[]");
-        let mut d = unsafe { d.as_bytes_mut() };
-        let simd = Deserializer::from_slice(&mut d).expect("");
-        assert_eq!(simd.tape[1], Node::Array(0, 2));
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        assert_eq!(simd.tape[1], Node::Array { len: 0, count: 0 });
     }
 
     #[test]
     fn count2() {
         let mut d = String::from("[1]");
-        let mut d = unsafe { d.as_bytes_mut() };
-        let simd = Deserializer::from_slice(&mut d).expect("");
-        assert_eq!(simd.tape[1], Node::Array(1, 3));
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        assert_eq!(simd.tape[1], Node::Array { len: 1, count: 1 });
     }
 
     #[test]
     fn count3() {
         let mut d = String::from("[1,2]");
-        let mut d = unsafe { d.as_bytes_mut() };
-        let simd = Deserializer::from_slice(&mut d).expect("");
-        assert_eq!(simd.tape[1], Node::Array(2, 4));
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        assert_eq!(simd.tape[1], Node::Array { len: 2, count: 2 });
     }
 
     #[test]
     fn count4() {
         let mut d = String::from(" [ 1 , [ 3 ] , 2 ]");
-        let mut d = unsafe { d.as_bytes_mut() };
-        let simd = Deserializer::from_slice(&mut d).expect("");
-        assert_eq!(simd.tape[1], Node::Array(3, 6));
-        assert_eq!(simd.tape[3], Node::Array(1, 5));
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        assert_eq!(simd.tape[1], Node::Array { len: 3, count: 4 });
+        assert_eq!(simd.tape[3], Node::Array { len: 1, count: 1 });
     }
 
     #[test]
     fn count5() {
         let mut d = String::from("[[],null,null]");
-        let mut d = unsafe { d.as_bytes_mut() };
-        let simd = Deserializer::from_slice(&mut d).expect("");
-        assert_eq!(simd.tape[1], Node::Array(3, 5));
-        assert_eq!(simd.tape[2], Node::Array(0, 3));
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        assert_eq!(simd.tape[1], Node::Array { len: 3, count: 3 });
+        assert_eq!(simd.tape[2], Node::Array { len: 0, count: 0 });
+    }
+
+    #[test]
+    fn test_tape_object_simple() {
+        let mut d = String::from(r#" { "hello": 1 , "b": 1 }"#);
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        assert_eq!(
+            simd.tape,
+            [
+                Node::Static(StaticNode::Null),
+                Node::Object { len: 2, count: 4 },
+                Node::String(r#"hello"#), // <-- This is already escaped
+                Node::Static(StaticNode::I64(1)),
+                Node::String("b"),
+                Node::Static(StaticNode::I64(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tape_object_escaped() {
+        let mut d = String::from(r#" { "hell\"o": 1 , "b": [ 1, 2, 3 ] }"#);
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        assert_eq!(
+            simd.tape,
+            [
+                Node::Static(StaticNode::Null),
+                Node::Object { len: 2, count: 7 },
+                Node::String(r#"hell"o"#), // <-- This is already escaped
+                Node::Static(StaticNode::I64(1)),
+                Node::String("b"),
+                Node::Array { len: 3, count: 3 },
+                Node::Static(StaticNode::I64(1)),
+                Node::Static(StaticNode::I64(2)),
+                Node::Static(StaticNode::I64(3))
+            ]
+        );
+    }
+
+    #[test]
+    fn string_array() {
+        const STR: &str = r#""{\"arg\":\"test\"}""#;
+        let mut d = String::from(STR);
+        let d = unsafe { d.as_bytes_mut() };
+        let simd = Deserializer::from_slice(d).expect("");
+        dbg!(&simd.tape);
+        // assert_eq!(simd.tape[1], Node::Array(1, 3));
+        assert_eq!(simd.tape[1], Node::String("{\"arg\":\"test\"}"));
     }
 
     #[cfg(feature = "128bit")]
@@ -865,6 +1021,7 @@ mod tests {
         assert_eq!(v, parsed);
     }
     #[cfg(not(feature = "128bit"))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_json_value() -> BoxedStrategy<Value> {
         let leaf = prop_oneof![
             Just(Value::Static(StaticNode::Null)),
@@ -890,6 +1047,7 @@ mod tests {
     }
 
     #[cfg(feature = "128bit")]
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_json_value() -> BoxedStrategy<Value> {
         let leaf = prop_oneof![
             Just(Value::Static(StaticNode::Null)),
@@ -916,6 +1074,7 @@ mod tests {
         .boxed()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig {
             // Setting both fork and timeout is redundant since timeout implies
@@ -929,7 +1088,7 @@ mod tests {
         fn prop_json_encode_decode(val in arb_json_value()) {
             let mut encoded: Vec<u8> = Vec::new();
             val.write(&mut encoded).expect("write");
-            println!("{}", String::from_utf8_lossy(&encoded.clone()));
+            println!("{}", String::from_utf8_lossy(&encoded));
             let mut e = encoded.clone();
             let res = to_owned_value(&mut e).expect("can't convert");
             assert_eq!(val, res);
@@ -942,7 +1101,7 @@ mod tests {
                 let mut e = encoded.clone();
                 let res: OwnedValue = deserialize(&mut e).expect("can't convert");
                 assert_eq!(val, res);
-                let mut e = encoded.clone();
+                let mut e = encoded;
                 let res: BorrowedValue = deserialize(&mut e).expect("can't convert");
                 assert_eq!(val, res);
             }
@@ -958,6 +1117,7 @@ mod tests_serde {
     use super::serde::from_slice;
     use super::{owned::to_value, owned::Object, owned::Value, to_borrowed_value, to_owned_value};
     use halfbrown::HashMap;
+    #[cfg(not(target_arch = "wasm32"))]
     use proptest::prelude::*;
     use serde::Deserialize;
 
@@ -965,9 +1125,9 @@ mod tests_serde {
 
     #[test]
     fn empty() {
-        let mut d = String::from("");
-        let mut d = unsafe { d.as_bytes_mut() };
-        let v_simd = from_slice::<Value>(&mut d);
+        let mut d = String::new();
+        let d = unsafe { d.as_bytes_mut() };
+        let v_simd = from_slice::<Value>(d);
         let v_serde = serde_json::from_slice::<Value>(d);
         assert!(v_simd.is_err());
         assert!(v_serde.is_err());
@@ -977,25 +1137,25 @@ mod tests_serde {
     fn bool_true() {
         let mut d = String::from("true");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
 
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::from(true)));
+        assert_eq!(to_value(d1), Ok(Value::from(true)));
     }
 
     #[test]
     fn bool_false() {
         let mut d = String::from("false");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::from(false)));
+        assert_eq!(to_value(d1), Ok(Value::from(false)));
         //assert!(false)
     }
 
@@ -1003,92 +1163,92 @@ mod tests_serde {
     fn union() {
         let mut d = String::from("null");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::Static(StaticNode::Null)));
+        assert_eq!(to_value(d1), Ok(Value::Static(StaticNode::Null)));
     }
 
     #[test]
     fn int() {
         let mut d = String::from("42");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::from(42)));
+        assert_eq!(to_value(d1), Ok(Value::from(42)));
     }
 
     #[test]
     fn zero() {
         let mut d = String::from("0");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::from(0)));
+        assert_eq!(to_value(d1), Ok(Value::from(0)));
     }
 
     #[test]
     fn one() {
         let mut d = String::from("1");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::from(1)));
+        assert_eq!(to_value(d1), Ok(Value::from(1)));
     }
 
     #[test]
     fn minus_one() {
         let mut d = String::from("-1");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::from(-1)));
+        assert_eq!(to_value(d1), Ok(Value::from(-1)));
     }
 
     #[test]
     fn float() {
         let mut d = String::from("23.0");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        assert_eq!(to_value(&mut d1), Ok(Value::from(23.0)));
+        assert_eq!(to_value(d1), Ok(Value::from(23.0)));
     }
 
     #[test]
     fn string() {
         let mut d = String::from(r#""snot""#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
-        assert_eq!(to_value(&mut d1), Ok(Value::from("snot")));
+        let v_simd: serde_json::Value = from_slice(d).expect("");
+        assert_eq!(to_value(d1), Ok(Value::from("snot")));
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn lonely_quote() {
         let mut d = String::from(r#"""#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde = serde_json::from_slice::<serde_json::Value>(d).is_err();
-        let v_simd = from_slice::<serde_json::Value>(&mut d).is_err();
+        let v_simd = from_slice::<serde_json::Value>(d).is_err();
         assert!(v_simd);
         assert!(v_serde);
     }
@@ -1096,18 +1256,18 @@ mod tests_serde {
     #[test]
     fn lonely_quote1() {
         let mut d = String::from(r#"["]"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde = serde_json::from_slice::<serde_json::Value>(d).is_err();
-        let v_simd = from_slice::<serde_json::Value>(&mut d).is_err();
+        let v_simd = from_slice::<serde_json::Value>(d).is_err();
         assert!(v_simd);
         assert!(v_serde);
     }
     #[test]
     fn lonely_quote2() {
         let mut d = String::from(r#"[1, "]"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde = serde_json::from_slice::<serde_json::Value>(d).is_err();
-        let v_simd = from_slice::<serde_json::Value>(&mut d).is_err();
+        let v_simd = from_slice::<serde_json::Value>(d).is_err();
         assert!(v_simd);
         assert!(v_serde);
     }
@@ -1115,9 +1275,9 @@ mod tests_serde {
     #[test]
     fn lonely_quote3() {
         let mut d = String::from(r#"{": 1}"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde = serde_json::from_slice::<serde_json::Value>(d).is_err();
-        let v_simd = from_slice::<serde_json::Value>(&mut d).is_err();
+        let v_simd = from_slice::<serde_json::Value>(d).is_err();
         assert!(v_simd);
         assert!(v_serde);
     }
@@ -1126,11 +1286,11 @@ mod tests_serde {
     fn empty_string() {
         let mut d = String::from(r#""""#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
-        assert_eq!(to_value(&mut d1), Ok(Value::from("")));
+        let v_simd: serde_json::Value = from_slice(d).expect("");
+        assert_eq!(to_value(d1), Ok(Value::from("")));
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1138,11 +1298,11 @@ mod tests_serde {
     fn empty_array() {
         let mut d = String::from(r#"[]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("parse_serde");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("parse_simd");
-        assert_eq!(to_value(&mut d1), Ok(Value::Array(vec![])));
+        let v_simd: serde_json::Value = from_slice(d).expect("parse_simd");
+        assert_eq!(to_value(d1), Ok(Value::Array(vec![])));
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1151,13 +1311,13 @@ mod tests_serde {
         let mut d = String::from(r#"[["#);
         let mut d1 = d.clone();
         let mut d2 = d.clone();
-        let mut d = unsafe { d.as_bytes_mut() };
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d2 = unsafe { d2.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d2 = unsafe { d2.as_bytes_mut() };
         let v_serde: Result<serde_json::Value, _> = serde_json::from_slice(d);
-        let v_simd_owned_value = to_owned_value(&mut d);
-        let v_simd_borrowed_value = to_borrowed_value(&mut d1);
-        let v_simd: Result<serde_json::Value, _> = from_slice(&mut d2);
+        let v_simd_owned_value = to_owned_value(d);
+        let v_simd_borrowed_value = to_borrowed_value(d1);
+        let v_simd: Result<serde_json::Value, _> = from_slice(d2);
         assert!(v_simd_owned_value.is_err());
         assert!(v_simd_borrowed_value.is_err());
         assert!(v_simd.is_err());
@@ -1168,14 +1328,11 @@ mod tests_serde {
     fn double_array() {
         let mut d = String::from(r#"[[]]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("parse_serde");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("parse_simd");
-        assert_eq!(
-            to_value(&mut d1),
-            Ok(Value::Array(vec![Value::Array(vec![])]))
-        );
+        let v_simd: serde_json::Value = from_slice(d).expect("parse_simd");
+        assert_eq!(to_value(d1), Ok(Value::Array(vec![Value::Array(vec![])])));
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1183,12 +1340,12 @@ mod tests_serde {
     fn null_null_array() {
         let mut d = String::from(r#"[[],null,null]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("parse_serde");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("parse_simd");
+        let v_simd: serde_json::Value = from_slice(d).expect("parse_simd");
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![
                 Value::Array(vec![]),
                 Value::Static(StaticNode::Null),
@@ -1202,14 +1359,11 @@ mod tests_serde {
     fn one_element_array() {
         let mut d = String::from(r#"["snot"]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
-        assert_eq!(
-            to_value(&mut d1),
-            Ok(Value::Array(vec![Value::from("snot")]))
-        );
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
+        assert_eq!(to_value(d1), Ok(Value::Array(vec![Value::from("snot")])));
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1217,17 +1371,17 @@ mod tests_serde {
     fn two_element_array() {
         let mut d = String::from(r#"["snot", "badger"]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![
                 Value::from("snot"),
                 Value::from("badger")
             ]))
         );
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1235,13 +1389,13 @@ mod tests_serde {
     fn list() {
         let mut d = String::from(r#"[42, 23.0, "snot badger"]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![
                 Value::from(42),
                 Value::from(23.0),
@@ -1254,10 +1408,10 @@ mod tests_serde {
     fn nested_list1() {
         let mut d = String::from(r#"[42, [23.0, "snot"], "bad", "ger"]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![
                 Value::from(42),
                 Value::Array(vec![Value::from(23.0), Value::from("snot")]),
@@ -1267,36 +1421,44 @@ mod tests_serde {
         );
 
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn nested_list2() {
         let mut d = String::from(r#"[42, [23.0, "snot"], {"bad": "ger"}]"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn utf8() {
         let mut d = String::from(r#""\u000e""#);
-        let mut d = unsafe { d.as_bytes_mut() };
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let d = unsafe { d.as_bytes_mut() };
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, "\u{e}");
         // NOTE: serde is broken for this
         //assert_eq!(v_serde, "\u{e}");
         //assert_eq!(v_simd, v_serde);
     }
+    #[test]
+    fn utf8_invalid_surrogates() {
+        // This is invalid UTF-8, the first character is a high surrogate
+        let mut d = String::from(r#""\uDE71""#);
+        let d = unsafe { d.as_bytes_mut() };
+        let v_simd: Result<serde_json::Value, _> = from_slice(d);
+        assert!(v_simd.is_err());
+    }
 
     #[test]
     fn unicode() {
         let mut d = String::from(r#""¡\"""#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1304,15 +1466,15 @@ mod tests_serde {
     fn odd_array() {
         let mut d = String::from("[{},null]");
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![
-                Value::from(Object::new()),
+                Value::from(Object::default()),
                 Value::Static(StaticNode::Null)
             ]))
         );
@@ -1325,25 +1487,25 @@ mod tests_serde {
         );
 
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
         let mut o = Value::object();
         o.insert("name", "max_unsafe_auto_id_timestamp")
             .expect("failed to set key");
         o.insert("value", -9_223_372_036_854_775_808_i64)
             .expect("failed to set key");
-        assert_eq!(to_value(&mut d1), Ok(o));
+        assert_eq!(to_value(d1), Ok(o));
     }
 
     #[test]
     fn map2() {
         let mut d = String::from(r#"[{"\u0000":null}]"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1351,28 +1513,28 @@ mod tests_serde {
     fn null() {
         let mut d = String::from(r#"null"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
-        assert_eq!(to_value(&mut d1), Ok(Value::Static(StaticNode::Null)));
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
+        assert_eq!(to_value(d1), Ok(Value::Static(StaticNode::Null)));
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
     #[test]
     fn null_null() {
         let mut d = String::from(r#"[null, null]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![
                 Value::Static(StaticNode::Null),
                 Value::Static(StaticNode::Null),
             ]))
         );
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1380,10 +1542,10 @@ mod tests_serde {
     fn nested_null() {
         let mut d = String::from(r#"[[null, null]]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![Value::Array(vec![
                 Value::Static(StaticNode::Null),
                 Value::Static(StaticNode::Null),
@@ -1391,7 +1553,7 @@ mod tests_serde {
         );
 
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1399,13 +1561,13 @@ mod tests_serde {
     fn nestednested_null() {
         let mut d = String::from(r#"[[[null, null]]]"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
         assert_eq!(
-            to_value(&mut d1),
+            to_value(d1),
             Ok(Value::Array(vec![Value::Array(vec![Value::Array(vec![
                 Value::Static(StaticNode::Null),
                 Value::Static(StaticNode::Null),
@@ -1416,36 +1578,36 @@ mod tests_serde {
     #[test]
     fn odd_array2() {
         let mut d = String::from("[[\"\\u0000\\\"\"]]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn odd_array3() {
         let mut d = String::from("[{\"\\u0000\\u0000\":null}]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn odd_array4() {
         let mut d = String::from("[{\"\\u0000𐀀a\":null}]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn float1() {
         let mut d = String::from("2.3250706903316115e307");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("simd_json");
+        let v_simd: serde_json::Value = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1454,9 +1616,19 @@ mod tests_serde {
     #[test]
     fn float2() {
         let mut d = String::from("-4.5512678569607477e306");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("simd_json");
+        let v_simd: serde_json::Value = from_slice(d).expect("simd_json");
+        assert_eq!(v_simd, v_serde);
+    }
+
+    #[cfg(not(feature = "approx-number-parsing"))]
+    #[test]
+    fn float3() {
+        let mut d = String::from("0.6");
+        let d = unsafe { d.as_bytes_mut() };
+        let v_serde: serde_json::Number = serde_json::from_slice(d).expect("serde_json");
+        let v_simd: serde_json::Number = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1464,47 +1636,47 @@ mod tests_serde {
     fn map0() {
         let mut d = String::from(r#"{"snot": "badger"}"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        let mut h = Object::new();
+        let mut h = Object::default();
         h.insert("snot".into(), Value::from("badger"));
-        assert_eq!(to_value(&mut d1), Ok(Value::from(h)));
+        assert_eq!(to_value(d1), Ok(Value::from(h)));
     }
 
     #[test]
     fn map1() {
         let mut d = String::from(r#"{"snot": "badger", "badger": "snot"}"#);
         let mut d1 = d.clone();
-        let mut d1 = unsafe { d1.as_bytes_mut() };
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d1 = unsafe { d1.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("");
+        let v_simd: serde_json::Value = from_slice(d).expect("");
         assert_eq!(v_simd, v_serde);
-        let mut h = Object::new();
+        let mut h = Object::default();
         h.insert("snot".into(), Value::from("badger"));
         h.insert("badger".into(), Value::from("snot"));
-        assert_eq!(to_value(&mut d1), Ok(Value::from(h)));
+        assert_eq!(to_value(d1), Ok(Value::from(h)));
     }
 
     #[cfg(feature = "serde_impl")]
     #[test]
     fn tpl1() {
         let mut d = String::from("[-65.613616999999977, 43.420273000000009]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: (f32, f32) = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: (f32, f32) = from_slice(&mut d).expect("simd_json");
+        let v_simd: (f32, f32) = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn tpl2() {
         let mut d = String::from("[[-65.613616999999977, 43.420273000000009]]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Vec<(f32, f32)> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Vec<(f32, f32)> = from_slice(&mut d).expect("simd_json");
+        let v_simd: Vec<(f32, f32)> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1513,43 +1685,43 @@ mod tests_serde {
         let mut d = String::from(
             "[[-65.613616999999977,43.420273000000009], [-65.613616999999977,43.420273000000009]]",
         );
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Vec<(f32, f32)> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Vec<(f32, f32)> = from_slice(&mut d).expect("simd_json");
+        let v_simd: Vec<(f32, f32)> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
     #[test]
     fn tpl4() {
         let mut d = String::from("[[[-65.613616999999977,43.420273000000009]]]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Vec<Vec<(f32, f32)>> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Vec<Vec<(f32, f32)>> = from_slice(&mut d).expect("simd_json");
+        let v_simd: Vec<Vec<(f32, f32)>> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
     #[test]
     fn tpl5() {
         let mut d = String::from("[[[-65.613616999999977,43.420273000000009], [-65.613616999999977,43.420273000000009]]]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Vec<Vec<(f32, f32)>> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Vec<Vec<(f32, f32)>> = from_slice(&mut d).expect("simd_json");
+        let v_simd: Vec<Vec<(f32, f32)>> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn tpl6() {
         let mut d = String::from("[[[[-65.613616999999977,43.420273000000009], [-65.613616999999977,43.420273000000009]]]]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Vec<Vec<Vec<(f32, f32)>>> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Vec<Vec<Vec<(f32, f32)>>> = from_slice(&mut d).expect("simd_json");
+        let v_simd: Vec<Vec<Vec<(f32, f32)>>> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn tpl7() {
         let mut d = String::from("[[[[-65.613616999999977,43.420273000000009], [-65.613616999999977,43.420273000000009]]]]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Vec<Vec<Vec<[f32; 2]>>> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Vec<Vec<Vec<[f32; 2]>>> = from_slice(&mut d).expect("simd_json");
+        let v_simd: Vec<Vec<Vec<[f32; 2]>>> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1567,9 +1739,9 @@ mod tests_serde {
     #[test]
     fn obj1() {
         let mut d = String::from(r#"{"a": 1, "b":1}"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Obj = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Obj = from_slice(&mut d).expect("simd_json");
+        let v_simd: Obj = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1577,9 +1749,9 @@ mod tests_serde {
     fn obj2() {
         let mut d =
             String::from(r#"{"a": {"a": 1, "b":1}, "b": {"a": 1, "b":1}, "c": {"a": 1, "b": 1}}"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: HashMap<String, Obj> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: HashMap<String, Obj> = from_slice(&mut d).expect("simd_json");
+        let v_simd: HashMap<String, Obj> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
@@ -1588,29 +1760,37 @@ mod tests_serde {
         let mut d = String::from(
             r#"{"c": {"a": {"a": 1, "b":1}, "b": {"a": 1, "b":1}, "c": {"a": 1, "b": 1}}}"#,
         );
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: HashMap<String, HashMap<String, Obj>> =
             serde_json::from_slice(d).expect("serde_json");
-        let v_simd: HashMap<String, HashMap<String, Obj>> = from_slice(&mut d).expect("simd_json");
+        let v_simd: HashMap<String, HashMap<String, Obj>> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn obj4() {
         let mut d = String::from(r#"{"c": {"a": {"a": 1, "b":1}}}"#);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: HashMap<String, Obj1> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: HashMap<String, Obj1> = from_slice(&mut d).expect("simd_json");
+        let v_simd: HashMap<String, Obj1> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
     #[test]
     fn vecvec() {
         let mut d = String::from("[[[-65.613616999999977,43.420273000000009], [-65.613616999999977,43.420273000000009]], [[-65.613616999999977,43.420273000000009], [-65.613616999999977,43.420273000000009]]]");
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: Vec<Vec<(f32, f32)>> = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: Vec<Vec<(f32, f32)>> = from_slice(&mut d).expect("simd_json");
+        let v_simd: Vec<Vec<(f32, f32)>> = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
+    }
+
+    #[test]
+    fn invalid_float_array() {
+        let mut data =
+            b"[11111111111111111111111111111E1,-111111111111111111111E111111111".to_vec();
+
+        assert!(to_owned_value(&mut data).is_err());
     }
 
     #[test]
@@ -1618,16 +1798,16 @@ mod tests_serde {
         // there is unicode in here!
         let d = "\"𐀀𐀀  𐀀𐀀0 𐀀A\\u00000A0 A \\u000b\"";
         let mut d = String::from(d);
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: serde_json::Value = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: serde_json::Value = from_slice(&mut d).expect("simd_json");
+        let v_simd: serde_json::Value = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
     #[cfg(feature = "serde_impl")]
     #[test]
     fn event() {
-        #[derive(Deserialize, Debug, PartialEq)]
+        #[derive(Deserialize, Debug, PartialEq, Eq)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
         pub struct CitmCatalog {
             pub area_names: HashMap<String, String>,
@@ -1636,7 +1816,7 @@ mod tests_serde {
             pub events: HashMap<String, Event>,
         }
         pub type Id = u32;
-        #[derive(Deserialize, Debug, PartialEq)]
+        #[derive(Deserialize, Debug, PartialEq, Eq)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
         pub struct Event {
             pub description: (),
@@ -1714,13 +1894,14 @@ mod tests_serde {
 }
 "#,
         );
-        let mut d = unsafe { d.as_bytes_mut() };
+        let d = unsafe { d.as_bytes_mut() };
         let v_serde: CitmCatalog = serde_json::from_slice(d).expect("serde_json");
-        let v_simd: CitmCatalog = from_slice(&mut d).expect("simd_json");
+        let v_simd: CitmCatalog = from_slice(d).expect("simd_json");
         assert_eq!(v_simd, v_serde);
     }
 
     //6.576692109929364e305
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_json() -> BoxedStrategy<String> {
         let leaf = prop_oneof![
             Just(Value::Static(StaticNode::Null)),
@@ -1747,6 +1928,55 @@ mod tests_serde {
         .boxed()
     }
 
+    #[cfg(feature = "serde_impl")]
+    #[test]
+    fn int_map_key() -> Result<(), crate::Error> {
+        use std::collections::BTreeMap;
+
+        let mut map = BTreeMap::new();
+        map.insert(0, "foo");
+        map.insert(1, "bar");
+        map.insert(2, "baz");
+
+        assert_eq!(
+            r#"{"0":"foo","1":"bar","2":"baz"}"#,
+            crate::to_string(&map)?
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "serde_impl")]
+    #[test]
+    fn enum_test() -> Result<(), crate::Error> {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+        struct MyStruct {
+            field: u8,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+        enum MyEnum {
+            First(MyStruct),
+            Second(u8),
+        }
+
+        let thing = MyEnum::First(MyStruct { field: 1 });
+        let mut ser = crate::serde::to_string(&thing)?;
+        println!("Ser {ser:?}");
+        let des: MyEnum = unsafe { crate::serde::from_str(&mut ser)? };
+        println!("Des {des:?}");
+        assert_eq!(thing, des);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_float() {
+        let mut s: Vec<u8> = b"[100,9e999]".to_vec();
+        assert!(to_owned_value(&mut s).is_err());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig {
             // Setting both fork and timeout is redundant since timeout implies
@@ -1782,9 +2012,11 @@ mod tests_serde {
 
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_junk() -> BoxedStrategy<Vec<u8>> {
         prop::collection::vec(any::<u8>(), 0..(1024 * 8)).boxed()
     }
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig {
             // Setting both fork and timeout is redundant since timeout implies
@@ -1807,6 +2039,7 @@ mod tests_serde {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig {
             // Setting both fork and timeout is redundant since timeout implies
@@ -1820,14 +2053,14 @@ mod tests_serde {
         #[should_panic]
         fn prop_string(d in "\\PC*") {
             let mut d1 = d.clone();
-            let mut d1 = unsafe{ d1.as_bytes_mut()};
+            let d1 = unsafe{ d1.as_bytes_mut()};
             let mut d2 = d.clone();
-            let mut d2 = unsafe{ d2.as_bytes_mut()};
+            let d2 = unsafe{ d2.as_bytes_mut()};
             let mut d3 = d;
-            let mut d3 = unsafe{ d3.as_bytes_mut()};
-            from_slice::<serde_json::Value>(&mut d1).expect("from_slice");
-            to_borrowed_value(&mut d2).expect("to_borrowed_value");
-            to_owned_value(&mut d3).expect("to_owned_value");
+            let d3 = unsafe{ d3.as_bytes_mut()};
+            from_slice::<serde_json::Value>(d1).expect("from_slice");
+            to_borrowed_value(d2).expect("to_borrowed_value");
+            to_owned_value(d3).expect("to_owned_value");
 
         }
     }

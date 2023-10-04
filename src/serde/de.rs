@@ -29,8 +29,8 @@ where
             Node::Static(StaticNode::U64(n)) => visitor.visit_u64(n),
             #[cfg(feature = "128bit")]
             Node::Static(StaticNode::U128(n)) => visitor.visit_u128(n),
-            Node::Array(len, _) => visitor.visit_seq(CommaSeparated::new(self, len as usize)),
-            Node::Object(len, _) => visitor.visit_map(CommaSeparated::new(self, len as usize)),
+            Node::Array { len, count: _ } => visitor.visit_seq(CommaSeparated::new(self, len)),
+            Node::Object { len, count: _ } => visitor.visit_map(CommaSeparated::new(self, len)),
         }
     }
 
@@ -234,9 +234,9 @@ where
         V: Visitor<'de>,
     {
         // Parse the opening bracket of the sequence.
-        if let Ok(Node::Array(len, _)) = self.next() {
+        if let Ok(Node::Array { len, count: _ }) = self.next() {
             // Give the visitor access to each element of the sequence.
-            visitor.visit_seq(CommaSeparated::new(self, len as usize))
+            visitor.visit_seq(CommaSeparated::new(self, len))
         } else {
             Err(Deserializer::error(ErrorType::ExpectedArray))
         }
@@ -297,9 +297,9 @@ where
         V: Visitor<'de>,
     {
         // Parse the opening bracket of the sequence.
-        if let Ok(Node::Object(len, _)) = self.next() {
+        if let Ok(Node::Object { len, count: _ }) = self.next() {
             // Give the visitor access to each element of the sequence.
-            visitor.visit_map(CommaSeparated::new(self, len as usize))
+            visitor.visit_map(CommaSeparated::new(self, len))
         } else {
             Err(Deserializer::error(ErrorType::ExpectedMap))
         }
@@ -317,8 +317,8 @@ where
     {
         match self.next() {
             // Give the visitor access to each element of the sequence.
-            Ok(Node::Object(len, _)) => visitor.visit_map(CommaSeparated::new(self, len as usize)),
-            Ok(Node::Array(len, _)) => visitor.visit_seq(CommaSeparated::new(self, len as usize)),
+            Ok(Node::Object { len, count: _ }) => visitor.visit_map(CommaSeparated::new(self, len)),
+            Ok(Node::Array { len, count: _ }) => visitor.visit_seq(CommaSeparated::new(self, len)),
             _ => Err(Deserializer::error(ErrorType::ExpectedMap)),
         }
     }
@@ -335,12 +335,13 @@ where
     {
         // Parse the opening bracket of the sequence.
         match self.next() {
-            Ok(Node::Object(len, _)) => {
+            Ok(Node::Object { len, count: _ }) if len == 1 => {
                 // Give the visitor access to each element of the sequence.
-                visitor.visit_map(CommaSeparated::new(self, len as usize))
+                // let value = ri!(visitor.visit_enum(VariantAccess::new(self)));
+                visitor.visit_enum(VariantAccess::new(self))
             }
             Ok(Node::String(s)) => visitor.visit_enum(s.into_deserializer()),
-            _ => Err(Deserializer::error(ErrorType::ExpectedMap)),
+            _ => Err(Deserializer::error(ErrorType::ExpectedEnum)),
         }
     }
 
@@ -348,6 +349,59 @@ where
             char
             bytes byte_buf
             identifier ignored_any
+    }
+}
+
+// From  https://github.com/serde-rs/json/blob/2d81cbd11302bd246db248dfb335110d1827e893/src/de.rs
+struct VariantAccess<'a, 'de> {
+    de: &'a mut Deserializer<'de>,
+}
+
+impl<'a, 'de> VariantAccess<'a, 'de> {
+    fn new(de: &'a mut Deserializer<'de>) -> Self {
+        VariantAccess { de }
+    }
+}
+
+impl<'de, 'a> de::EnumAccess<'de> for VariantAccess<'a, 'de> {
+    type Error = Error;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self)>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let val = stry!(seed.deserialize(&mut *self.de));
+        Ok((val, self))
+    }
+}
+
+impl<'de, 'a> de::VariantAccess<'de> for VariantAccess<'a, 'de> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<()> {
+        de::Deserialize::deserialize(self.de)
+    }
+
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(self.de)
+    }
+
+    fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        de::Deserializer::deserialize_seq(self.de, visitor)
+    }
+
+    fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
     }
 }
 

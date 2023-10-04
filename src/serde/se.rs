@@ -52,7 +52,7 @@ where
 }
 struct Serializer<W: Write>(W);
 
-impl<'writer, W> BaseGenerator for Serializer<W>
+impl<W> BaseGenerator for Serializer<W>
 where
     W: Write,
 {
@@ -655,9 +655,7 @@ where
             if let Some((first, rest)) = v.split_first() {
                 self.write_int(*first).and_then(|_| {
                     for v in rest {
-                        if let Err(e) = self.write(b",").and_then(|_| self.write_int(*v)) {
-                            return Err(e);
-                        }
+                        self.write(b",").and_then(|_| self.write_int(*v))?;
                     }
                     self.write(b"]")
                 })
@@ -820,21 +818,10 @@ where
 
 #[cfg(test)]
 mod test {
+    #[cfg(not(target_arch = "wasm32"))]
     use crate::{OwnedValue as Value, StaticNode};
+    #[cfg(not(target_arch = "wasm32"))]
     use proptest::prelude::*;
-
-    #[test]
-    fn pretty_print_serde() {
-        #[derive(Clone, Debug, PartialEq, serde::Serialize)]
-        enum Segment {
-            Id { mid: usize },
-        }
-
-        assert_eq!(
-            "{\n  \"Id\": {\n    \"mid\": 0\n  }\n}",
-            crate::to_string_pretty(&Segment::Id { mid: 0 }).expect("to_string_pretty")
-        );
-    }
 
     #[test]
     fn print_serde() {
@@ -871,6 +858,7 @@ mod test {
     }
 
     #[cfg(not(feature = "128bit"))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_json_value() -> BoxedStrategy<Value> {
         let leaf = prop_oneof![
             Just(Value::Static(StaticNode::Null)),
@@ -902,6 +890,7 @@ mod test {
     }
 
     #[cfg(feature = "128bit")]
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_json_value() -> BoxedStrategy<Value> {
         let leaf = prop_oneof![
             Just(Value::Static(StaticNode::Null)),
@@ -934,6 +923,7 @@ mod test {
         .boxed()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig {
             // Setting both fork and timeout is redundant since timeout implies

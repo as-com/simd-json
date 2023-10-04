@@ -24,16 +24,18 @@ mod cmp;
 mod from;
 mod serialize;
 
+use super::ObjectHasher;
 use crate::cow::Cow;
 use crate::prelude::*;
+use crate::safer_unchecked::GetSaferUnchecked;
 use crate::{AlignedBuf, Deserializer, Node, Result, StaticNode};
 use halfbrown::HashMap;
 use std::fmt;
 use std::ops::{Index, IndexMut};
-use value_trait::ValueAccess;
+use value_trait::{ValueAccess, ValueInto};
 
 /// Representation of a JSON object
-pub type Object<'value> = HashMap<Cow<'value, str>, Value<'value>>;
+pub type Object<'value> = HashMap<Cow<'value, str>, Value<'value>, ObjectHasher>;
 
 /// Parses a slice of bytes into a Value dom. This function will
 /// rewrite the slice to de-escape strings.
@@ -160,7 +162,10 @@ impl<'value> Builder<'value> for Value<'value> {
     #[inline]
     #[must_use]
     fn object_with_capacity(capacity: usize) -> Self {
-        Self::Object(Box::new(Object::with_capacity(capacity)))
+        Self::Object(Box::new(Object::with_capacity_and_hasher(
+            capacity,
+            ObjectHasher::default(),
+        )))
     }
 }
 
@@ -173,9 +178,26 @@ impl<'value> Mutable for Value<'value> {
             _ => None,
         }
     }
+    /// Get mutable access to a map.
+    ///
+    /// ```rust
+    /// use simd_json::*;
+    ///
+    /// let mut object: BorrowedValue = json!({
+    ///   "answer": 23,
+    ///   "key": 7
+    /// }).into();
+    /// assert_eq!(object["answer"], 23);
+    ///
+    /// if let Some(inner) = object.as_object_mut() {
+    ///   inner.insert("value".into(), BorrowedValue::from(json!({"nested": 42})));
+    /// }
+    /// assert_eq!(object["value"], json!({"nested": 42}));
+    ///
+    /// ```
     #[inline]
     #[must_use]
-    fn as_object_mut(&mut self) -> Option<&mut HashMap<<Self as ValueAccess>::Key, Self>> {
+    fn as_object_mut(&mut self) -> Option<&mut Object<'value>> {
         match self {
             Self::Object(m) => Some(m),
             _ => None,
@@ -184,17 +206,6 @@ impl<'value> Mutable for Value<'value> {
 }
 
 impl<'value> ValueTrait for Value<'value> {
-    #[inline]
-    #[must_use]
-    fn value_type(&self) -> ValueType {
-        match self {
-            Self::Static(s) => s.value_type(),
-            Self::String(_) => ValueType::String,
-            Self::Array(_) => ValueType::Array,
-            Self::Object(_) => ValueType::Object,
-        }
-    }
-
     #[inline]
     #[must_use]
     fn is_null(&self) -> bool {
@@ -206,7 +217,18 @@ impl<'value> ValueAccess for Value<'value> {
     type Target = Self;
     type Key = Cow<'value, str>;
     type Array = Vec<Self>;
-    type Object = HashMap<Self::Key, Self>;
+    type Object = Object<'value>;
+
+    #[inline]
+    #[must_use]
+    fn value_type(&self) -> ValueType {
+        match self {
+            Self::Static(s) => s.value_type(),
+            Self::String(_) => ValueType::String,
+            Self::Array(_) => ValueType::Array,
+            Self::Object(_) => ValueType::Object,
+        }
+    }
 
     #[inline]
     #[must_use]
@@ -296,9 +318,34 @@ impl<'value> ValueAccess for Value<'value> {
 
     #[inline]
     #[must_use]
-    fn as_object(&self) -> Option<&HashMap<Self::Key, Self>> {
+    fn as_object(&self) -> Option<&Object<'value>> {
         match self {
             Self::Object(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+impl<'value> ValueInto for Value<'value> {
+    type String = Cow<'value, str>;
+
+    fn into_string(self) -> Option<<Value<'value> as ValueInto>::String> {
+        match self {
+            Self::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn into_array(self) -> Option<<Value<'value> as ValueAccess>::Array> {
+        match self {
+            Self::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    fn into_object(self) -> Option<<Value<'value> as ValueAccess>::Object> {
+        match self {
+            Self::Object(a) => Some(*a),
             _ => None,
         }
     }
@@ -308,10 +355,10 @@ impl<'value> ValueAccess for Value<'value> {
 impl<'value> fmt::Display for Value<'value> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Static(s) => write!(f, "{}", s),
-            Self::String(s) => write!(f, "{}", s),
-            Self::Array(a) => write!(f, "{:?}", a),
-            Self::Object(o) => write!(f, "{:?}", o),
+            Self::Static(s) => write!(f, "{s}"),
+            Self::String(s) => write!(f, "{s}"),
+            Self::Array(a) => write!(f, "{a:?}"),
+            Self::Object(o) => write!(f, "{o:?}"),
         }
     }
 }
@@ -370,12 +417,13 @@ impl<'de> BorrowDeserializer<'de> {
         match unsafe { self.0.next_() } {
             Node::Static(s) => Value::Static(s),
             Node::String(s) => Value::from(s),
-            Node::Array(len, _) => self.parse_array(len),
-            Node::Object(len, _) => self.parse_map(len),
+            Node::Array { len, count: _ } => self.parse_array(len),
+            Node::Object { len, count: _ } => self.parse_map(len),
         }
     }
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[allow(clippy::uninit_vec)]
     fn parse_array(&mut self, len: usize) -> Value<'de> {
         // Rust doesn't optimize the normal loop away here
         // so we write our own avoiding the length
@@ -384,7 +432,7 @@ impl<'de> BorrowDeserializer<'de> {
         unsafe {
             res.set_len(len);
             for i in 0..len {
-                std::ptr::write(res.get_unchecked_mut(i), self.parse());
+                std::ptr::write(res.get_kinda_unchecked_mut(i), self.parse());
             }
         }
         Value::Array(res)
@@ -392,13 +440,16 @@ impl<'de> BorrowDeserializer<'de> {
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     fn parse_map(&mut self, len: usize) -> Value<'de> {
-        let mut res = Object::with_capacity(len);
+        let mut res = Object::with_capacity_and_hasher(len, ObjectHasher::default());
 
         // Since we checked if it's empty we know that we at least have one
         // element so we eat this
         for _ in 0..len {
             if let Node::String(key) = unsafe { self.0.next_() } {
+                #[cfg(not(feature = "value-no-dup-keys"))]
                 res.insert_nocheck(key.into(), self.parse());
+                #[cfg(feature = "value-no-dup-keys")]
+                res.insert(key.into(), self.parse());
             } else {
                 unreachable!();
             }
@@ -822,7 +873,7 @@ mod test {
 
     #[test]
     fn conversions_object() {
-        let v = Value::from(Object::new());
+        let v = Value::from(Object::with_capacity_and_hasher(1, ObjectHasher::default()));
         assert!(v.is_object());
         assert_eq!(v.value_type(), ValueType::Object);
         let v = Value::from("no object");
@@ -843,8 +894,10 @@ mod test {
         assert_eq!(Value::default(), Value::null());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     use proptest::prelude::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_value() -> BoxedStrategy<Value<'static>> {
         let leaf = prop_oneof![
             Just(Value::Static(StaticNode::Null)),
@@ -878,6 +931,7 @@ mod test {
         .boxed()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig {
             .. ProptestConfig::default()
@@ -902,8 +956,8 @@ mod test {
         #[test]
         fn prop_serialize_deserialize(borrowed in arb_value()) {
             let mut string = borrowed.encode();
-            let mut bytes = unsafe{ string.as_bytes_mut()};
-            let decoded = to_value(&mut bytes).expect("Failed to decode");
+            let bytes = unsafe{ string.as_bytes_mut()};
+            let decoded = to_value(bytes).expect("Failed to decode");
             prop_assert_eq!(borrowed, decoded);
         }
         #[test]
@@ -1002,7 +1056,7 @@ mod test {
         let v: Value = Value::from_iter(vec![("a", 1)]);
         assert_eq!(
             v,
-            vec![("a", 1)]
+            [("a", 1)]
                 .iter()
                 .copied()
                 .collect::<std::collections::HashMap<&str, i32>>()

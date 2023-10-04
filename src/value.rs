@@ -64,12 +64,20 @@ pub use self::owned::{
     to_value as to_owned_value, to_value_with_buffers as to_owned_value_with_buffers,
     Value as OwnedValue,
 };
+use crate::safer_unchecked::GetSaferUnchecked;
 use crate::{Deserializer, Result};
 use halfbrown::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use tape::Node;
 pub use value_trait::*;
+
+/// Hasher used for objects
+#[cfg(feature = "known-key")]
+pub type ObjectHasher = crate::known_key::NotSoRandomState;
+/// Hasher used for objects
+#[cfg(not(feature = "known-key"))]
+pub type ObjectHasher = halfbrown::DefaultHashBuilder;
 
 /// Parses a slice of bytes into a Value dom. This function will
 /// rewrite the slice to de-escape strings.
@@ -81,7 +89,7 @@ pub use value_trait::*;
 /// Will return `Err` if `s` is invalid JSON.
 pub fn deserialize<'de, Value, Key>(s: &'de mut [u8]) -> Result<Value>
 where
-    Value: Builder<'de> + From<Vec<Value>> + From<HashMap<Key, Value>> + 'de,
+    Value: Builder<'de> + From<Vec<Value>> + From<HashMap<Key, Value, ObjectHasher>> + 'de,
     Key: Hash + Eq + From<&'de str>,
 {
     match Deserializer::from_slice(s) {
@@ -92,7 +100,7 @@ where
 
 struct ValueDeserializer<'de, Value, Key>
 where
-    Value: Builder<'de> + From<Vec<Value>> + From<HashMap<Key, Value>> + 'de,
+    Value: Builder<'de> + From<Vec<Value>> + From<HashMap<Key, Value, ObjectHasher>> + 'de,
     Key: Hash + Eq + From<&'de str>,
 {
     de: Deserializer<'de>,
@@ -101,13 +109,17 @@ where
 
 impl<'de, Value, Key> ValueDeserializer<'de, Value, Key>
 where
-    Value: Builder<'de> + From<&'de str> + From<Vec<Value>> + From<HashMap<Key, Value>> + 'de,
+    Value: Builder<'de>
+        + From<&'de str>
+        + From<Vec<Value>>
+        + From<HashMap<Key, Value, ObjectHasher>>
+        + 'de,
     Key: Hash + Eq + From<&'de str>,
 {
     pub fn from_deserializer(de: Deserializer<'de>) -> Self {
         Self {
             de,
-            _marker: PhantomData::default(),
+            _marker: PhantomData,
         }
     }
 
@@ -116,12 +128,13 @@ where
         match unsafe { self.de.next_() } {
             Node::Static(s) => Value::from(s),
             Node::String(s) => Value::from(s),
-            Node::Array(len, _) => self.parse_array(len),
-            Node::Object(len, _) => self.parse_map(len),
+            Node::Array { len, count: _ } => self.parse_array(len),
+            Node::Object { len, count: _ } => self.parse_map(len),
         }
     }
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[allow(clippy::uninit_vec)]
     fn parse_array(&mut self, len: usize) -> Value {
         // Rust doesn't optimize the normal loop away here
         // so we write our own avoiding the length
@@ -130,7 +143,7 @@ where
         unsafe {
             res.set_len(len);
             for i in 0..len {
-                std::ptr::write(res.get_unchecked_mut(i), self.parse());
+                std::ptr::write(res.get_kinda_unchecked_mut(i), self.parse());
             }
         }
         Value::from(res)
@@ -138,13 +151,17 @@ where
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     fn parse_map(&mut self, len: usize) -> Value {
-        let mut res: HashMap<Key, Value> = HashMap::with_capacity(len);
+        let mut res: HashMap<Key, Value, ObjectHasher> =
+            HashMap::with_capacity_and_hasher(len, ObjectHasher::default());
 
         // Since we checked if it's empty we know that we at least have one
         // element so we eat this
         for _ in 0..len {
             if let Node::String(key) = unsafe { self.de.next_() } {
+                #[cfg(not(feature = "value-no-dup-keys"))]
                 res.insert_nocheck(key.into(), self.parse());
+                #[cfg(feature = "value-no-dup-keys")]
+                res.insert(key.into(), self.parse());
             } else {
                 unreachable!();
             }

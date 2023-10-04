@@ -1,15 +1,17 @@
 use std::fmt;
 
+use value_trait::ValueType;
+
 /// Error types encountered while parsing
 #[derive(Debug)]
 pub enum ErrorType {
+    /// A specific type was expected but another one encountered.
+    Unexpected(Option<ValueType>, Option<ValueType>),
     /// Simd-json only supports inputs of up to
     /// 4GB in size.
     InputTooLarge,
     /// The key of a map isn't a string
     BadKeyType,
-    /// The data ended early
-    EarlyEnd,
     /// Expected an array
     ExpectedArray,
     /// Expected a `,` in an array
@@ -66,12 +68,10 @@ pub enum ErrorType {
     Serde(String),
     /// Generic syntax error
     Syntax,
-    /// Training characters
-    TrailingCharacters,
+    /// Trailing data
+    TrailingData,
     /// Unexpected character
     UnexpectedCharacter,
-    /// Unexpected end
-    UnexpectedEnd,
     /// Unterminated string
     UnterminatedString,
     /// Expected Array elements
@@ -82,6 +82,8 @@ pub enum ErrorType {
     ExpectedObjectKey,
     /// Overflow of a limited buffer
     Overflow,
+    /// No SIMD support detected during runtime
+    SimdUnsupported,
     /// IO error
     Io(std::io::Error),
 }
@@ -99,7 +101,6 @@ impl PartialEq for ErrorType {
         match (self, other) {
             (Self::Io(_), Self::Io(_))
             | (Self::BadKeyType, Self::BadKeyType)
-            | (Self::EarlyEnd, Self::EarlyEnd)
             | (Self::ExpectedArray, Self::ExpectedArray)
             | (Self::ExpectedArrayComma, Self::ExpectedArrayComma)
             | (Self::ExpectedBoolean, Self::ExpectedBoolean)
@@ -127,9 +128,8 @@ impl PartialEq for ErrorType {
             | (Self::Parser, Self::Parser)
             | (Self::Eof, Self::Eof)
             | (Self::Syntax, Self::Syntax)
-            | (Self::TrailingCharacters, Self::TrailingCharacters)
+            | (Self::TrailingData, Self::TrailingData)
             | (Self::UnexpectedCharacter, Self::UnexpectedCharacter)
-            | (Self::UnexpectedEnd, Self::UnexpectedEnd)
             | (Self::UnterminatedString, Self::UnterminatedString)
             | (Self::ExpectedArrayContent, Self::ExpectedArrayContent)
             | (Self::ExpectedObjectContent, Self::ExpectedObjectContent)
@@ -146,25 +146,29 @@ pub struct Error {
     /// Byte index it was encountered at
     index: usize,
     /// Current character
-    character: char,
+    character: Option<char>,
     /// Type of error
     error: ErrorType,
 }
 
 impl Error {
-    pub(crate) fn new(index: usize, character: char, error: ErrorType) -> Self {
+    pub(crate) fn new(index: usize, character: Option<char>, error: ErrorType) -> Self {
         Self {
             index,
             character,
             error,
         }
     }
+    pub(crate) fn new_c(index: usize, character: char, error: ErrorType) -> Self {
+        Self::new(index, Some(character), error)
+    }
+
     /// Create a generic error
     #[must_use = "Error creation"]
     pub fn generic(t: ErrorType) -> Self {
         Self {
             index: 0,
-            character: '💩', //this is the poop emoji
+            character: None,
             error: t,
         }
     }
@@ -174,11 +178,11 @@ impl std::error::Error for Error {}
 #[cfg(not(tarpaulin_include))]
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{:?} at character {} ('{}')",
-            self.error, self.index, self.character
-        )
+        if let Some(c) = self.character {
+            write!(f, "{:?} at character {} ('{c}')", self.error, self.index)
+        } else {
+            write!(f, "{:?} at character {}", self.error, self.index)
+        }
     }
 }
 
@@ -191,13 +195,10 @@ impl From<Error> for std::io::Error {
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use super::{Error, ErrorType};
     #[test]
     fn fmt() {
         let e = Error::generic(ErrorType::InternalError);
-        assert_eq!(
-            format!("{}", e),
-            "InternalError at character 0 ('\u{1f4a9}')"
-        );
+        assert_eq!(e.to_string(), "InternalError at character 0");
     }
 }

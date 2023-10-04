@@ -23,15 +23,17 @@ mod cmp;
 mod from;
 mod serialize;
 
+use super::ObjectHasher;
 use crate::prelude::*;
+use crate::safer_unchecked::GetSaferUnchecked;
 use crate::{AlignedBuf, Deserializer, Node, Result, StaticNode};
 use halfbrown::HashMap;
 use std::fmt;
 use std::ops::{Index, IndexMut};
-use value_trait::ValueAccess;
+use value_trait::{ValueAccess, ValueInto};
 
 /// Representation of a JSON object
-pub type Object = HashMap<String, Value>;
+pub type Object = HashMap<String, Value, ObjectHasher>;
 
 /// Parses a slice of bytes into a Value dom. This function will
 /// rewrite the slice to de-escape strings.
@@ -99,7 +101,10 @@ impl<'input> Builder<'input> for Value {
     #[inline]
     #[must_use]
     fn object_with_capacity(capacity: usize) -> Self {
-        Self::Object(Box::new(Object::with_capacity(capacity)))
+        Self::Object(Box::new(Object::with_capacity_and_hasher(
+            capacity,
+            ObjectHasher::default(),
+        )))
     }
 }
 
@@ -114,7 +119,7 @@ impl Mutable for Value {
     }
     #[inline]
     #[must_use]
-    fn as_object_mut(&mut self) -> Option<&mut HashMap<Self::Key, Self>> {
+    fn as_object_mut(&mut self) -> Option<&mut Object> {
         match self {
             Self::Object(m) => Some(m),
             _ => None,
@@ -123,16 +128,6 @@ impl Mutable for Value {
 }
 
 impl ValueTrait for Value {
-    #[inline]
-    #[must_use]
-    fn value_type(&self) -> ValueType {
-        match self {
-            Self::Static(s) => s.value_type(),
-            Self::String(_) => ValueType::String,
-            Self::Array(_) => ValueType::Array,
-            Self::Object(_) => ValueType::Object,
-        }
-    }
     #[inline]
     #[must_use]
     fn is_null(&self) -> bool {
@@ -144,7 +139,18 @@ impl ValueAccess for Value {
     type Target = Value;
     type Key = String;
     type Array = Vec<Self>;
-    type Object = HashMap<Self::Key, Self>;
+    type Object = Object;
+
+    #[inline]
+    #[must_use]
+    fn value_type(&self) -> ValueType {
+        match self {
+            Self::Static(s) => s.value_type(),
+            Self::String(_) => ValueType::String,
+            Self::Array(_) => ValueType::Array,
+            Self::Object(_) => ValueType::Object,
+        }
+    }
 
     #[inline]
     #[must_use]
@@ -233,9 +239,34 @@ impl ValueAccess for Value {
 
     #[inline]
     #[must_use]
-    fn as_object(&self) -> Option<&HashMap<Self::Key, Self>> {
+    fn as_object(&self) -> Option<&Object> {
         match self {
             Self::Object(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+impl ValueInto for Value {
+    type String = String;
+
+    fn into_string(self) -> Option<<Value as ValueInto>::String> {
+        match self {
+            Self::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn into_array(self) -> Option<<Value as ValueAccess>::Array> {
+        match self {
+            Self::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    fn into_object(self) -> Option<<Value as ValueAccess>::Object> {
+        match self {
+            Self::Object(a) => Some(*a),
             _ => None,
         }
     }
@@ -246,9 +277,9 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Static(s) => s.fmt(f),
-            Self::String(s) => write!(f, "{}", s),
-            Self::Array(a) => write!(f, "{:?}", a),
-            Self::Object(o) => write!(f, "{:?}", o),
+            Self::String(s) => write!(f, "{s}"),
+            Self::Array(a) => write!(f, "{a:?}"),
+            Self::Object(o) => write!(f, "{o:?}"),
         }
     }
 }
@@ -308,12 +339,13 @@ impl<'de> OwnedDeserializer<'de> {
         match unsafe { self.de.next_() } {
             Node::Static(s) => Value::Static(s),
             Node::String(s) => Value::from(s),
-            Node::Array(len, _) => self.parse_array(len),
-            Node::Object(len, _) => self.parse_map(len),
+            Node::Array { len, count: _ } => self.parse_array(len),
+            Node::Object { len, count: _ } => self.parse_map(len),
         }
     }
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[allow(clippy::uninit_vec)]
     fn parse_array(&mut self, len: usize) -> Value {
         // Rust doesn't optimize the normal loop away here
         // so we write our own avoiding the length
@@ -322,7 +354,7 @@ impl<'de> OwnedDeserializer<'de> {
         unsafe {
             res.set_len(len);
             for i in 0..len {
-                std::ptr::write(res.get_unchecked_mut(i), self.parse());
+                std::ptr::write(res.get_kinda_unchecked_mut(i), self.parse());
             }
         }
         Value::Array(res)
@@ -330,13 +362,14 @@ impl<'de> OwnedDeserializer<'de> {
 
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     fn parse_map(&mut self, len: usize) -> Value {
-        let mut res = Object::with_capacity(len);
+        let mut res = Object::with_capacity_and_hasher(len, ObjectHasher::default());
 
         for _ in 0..len {
             if let Node::String(key) = unsafe { self.de.next_() } {
-                // We have to call parse short str twice since parse_short_str
-                // does not move the cursor forward
+                #[cfg(not(feature = "value-no-dup-keys"))]
                 res.insert_nocheck(key.into(), self.parse());
+                #[cfg(feature = "value-no-dup-keys")]
+                res.insert(key.into(), self.parse());
             } else {
                 unreachable!();
             }
@@ -759,7 +792,7 @@ mod test {
 
     #[test]
     fn conversions_object() {
-        let v = Value::from(Object::new());
+        let v = Value::from(Object::with_capacity_and_hasher(0, ObjectHasher::default()));
         assert!(v.is_object());
         assert_eq!(v.value_type(), ValueType::Object);
         let v = Value::from("no object");
@@ -780,7 +813,9 @@ mod test {
         assert_eq!(Value::default(), Value::null());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     use proptest::prelude::*;
+    #[cfg(not(target_arch = "wasm32"))]
     fn arb_value() -> BoxedStrategy<Value> {
         let leaf = prop_oneof![
             Just(Value::Static(StaticNode::Null)),
@@ -811,6 +846,7 @@ mod test {
         .boxed()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     proptest! {
         #![proptest_config(ProptestConfig {
             .. ProptestConfig::default()
@@ -826,8 +862,8 @@ mod test {
         #[test]
         fn prop_serialize_deserialize(owned in arb_value()) {
             let mut string = owned.encode();
-            let mut bytes = unsafe{ string.as_bytes_mut()};
-            let decoded = to_value(&mut bytes).expect("Failed to decode");
+            let bytes = unsafe{ string.as_bytes_mut()};
+            let decoded = to_value(bytes).expect("Failed to decode");
             prop_assert_eq!(owned, decoded);
         }
         #[test]
@@ -926,7 +962,7 @@ mod test {
         let v: Value = Value::from_iter(vec![("a", 1)]);
         assert_eq!(
             v,
-            vec![("a", 1)]
+            [("a", 1)]
                 .iter()
                 .copied()
                 .collect::<std::collections::HashMap<&str, i32>>()

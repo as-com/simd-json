@@ -22,37 +22,34 @@
 
 ### CPU target
 
-To be able to take advantage of `simd-json` your system needs to be SIMD capable. This means that it needs to compile with native cpu support and the given features. This also requires that projects using `simd-json` also need to be configured with native cpu support. Look at [The cargo config in this repository](.cargo/config) to get an example of how to configure this in your project.
+To be able to take advantage of `simd-json` your system needs to be SIMD capable. On `x86` it will select the best SIMD featureset (`avx2`, or `sse4.2`) during runtime. If `simd-json` is compiled with SIMD support, it will disable runtime detection.
 
 `simd-json` supports AVX2, SSE4.2 and NEON.
-
-Unless the `allow-non-simd` feature is passed to your `simd-json` dependency in your `Cargo.toml` `simd-json` will fail to compile, this is to prevent unexpected slowness in fallback mode that can be hard to understand and hard to debug.
 
 ### allocator
 
 For best performance we highly suggest using [mimalloc](https://crates.io/crates/mimalloc) or [jemalloc](https://crates.io/crates/jemalloc) instead of the system allocator used by default. Another recent allocator that works well ( but we have yet to test in production a setting ) is [snmalloc](https://github.com/microsoft/snmalloc).
 
-## serde
+## `serde`
 
 `simd-json` is compatible with serde and `serde-json`. The Value types provided implement serializers and deserializers. In addition to that `simd-json` implements the `Deserializer` trait for the parser so it can deserialize anything that implements the serde `Deserialize` trait. Note, that serde provides both a `Deserializer` and a `Deserialize` trait.
 
 That said the serde support is contained in the `serde_impl` feature which is part of the default feature set of `simd-json`, but it can be disabled.
 
-### known-key
+### `known-key`
 
 The `known-key` feature changes the hash mechanism for the DOM representation of the underlying JSON object, from `ahash` to `fxhash`. The `ahash` hasher is faster at hashing and provides protection against DOS attacks by forcing multiple keys into a single hashing bucket. The `fxhash` hasher on the other hand allows for repeatable hashing results, which in turn allows memoizing hashes for well known keys and saving time on lookups. In workloads that are heavy at accessing some well known keys this can be a performance advantage.
 
 The `known-key` feature is optional and disabled by default and should be explicitly configured.
 
-### serializing
+### `value-no-dup-keys`
 
-`simd-json` is not capable of serializing JSON data as there would be very little gain in re-implementing it. For serialization, we typically rely on `serde-json`.
 
-For DOM values we provide convience methods for serialization.
+**This flag has no effect on simd-json itself but purely affets the `Value` structs.**
 
-For struct values we defer to external serde-compatible serialization mechanisms.
+The `value-no-dup-keys` feature flag toggles stricter behaviour for objects when deserializing into a `Value`. When enabled, the Value deserializer will remove duplicate keys in a JSON object and only keep the last one. If not set duplicate keys are considered undefined behaviour and Value will not make guarantees on it's behaviour.
 
-### unsafe
+## safety
 
 `simd-json` uses **a lot** of unsafe code.
 
@@ -65,10 +62,11 @@ There are a few reasons for this:
 `simd-json` goes through extra scrutiny for unsafe code. These steps are:
 
 * Unit tests - to test 'the obvious' cases, edge cases, and regression cases
-* Structural constructive property based testing - We generate random valid JSON objects to exercise the full `simd-json` codebase stochastically. Floats are currently excluded since slighty different parsing algorihtms lead to slighty different results here. In short "is simd-json correct".
+* Structural constructive property based testing - We generate random valid JSON objects to exercise the full `simd-json` codebase stochastically. Floats are currently excluded since slighty different parsing algorithms lead to slighty different results here. In short "is simd-json correct".
 * Data-oriented property based testing of string-like data - to assert that sequences of legal printable characters don't panic or crash the parser (they might and often error so - they are not valid json!)
 * Destructive Property based testing - make sure that no illegal byte sequences crash the parser in any way
-* Fuzzing (using American Fuzzy Lop - afl) - fuzz based on upstream simd pass/fail cases
+* Fuzzing - fuzz based on upstream & jsonorg simd pass/fail cases
+* Miri testing for UB
 
 This doesn't ensure complete safety nor is at a bullet proof guarantee, but it does go a long way
 to asserting that the library is production quality and fit for purpose for practical industrial applications.
