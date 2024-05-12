@@ -428,7 +428,7 @@ macro_rules! json_internal_owned {
 
     ({}) => {
         {
-            use $crate::value::Builder;
+            use $crate::value::ValueBuilder;
             $crate::value::owned::Value::object()
         }
     };
@@ -666,7 +666,7 @@ macro_rules! json_internal_owned {
 
     ({}) => {
         {
-            use $crate::value::Builder;
+            use $crate::value::ValueBuilder;
             $crate::value::owned::Value::object()
         }
     };
@@ -913,7 +913,7 @@ macro_rules! json_internal_borrowed {
 
     ({}) => {
         {
-            use $crate::value::Builder;
+            use $crate::value::ValueBuilder;
             $crate::value::borrowed::Value::object()
         }
     };
@@ -1153,7 +1153,7 @@ macro_rules! json_internal_borrowed {
 
     ({}) => {
         {
-            use $crate::value::Builder;
+            use $crate::value::ValueBuilder;
             $crate::value::borrowed::Value::object()
         }
     };
@@ -1195,7 +1195,7 @@ macro_rules! json_unexpected {
 #[macro_export]
 macro_rules! likely {
     ($e:expr) => {
-        std::intrinsics::likely($e)
+        ::std::intrinsics::likely($e)
     };
 }
 
@@ -1204,33 +1204,57 @@ macro_rules! likely {
 #[macro_export]
 macro_rules! unlikely {
     ($e:expr) => {{
-        std::intrinsics::unlikely($e)
+        ::std::intrinsics::unlikely($e)
     }};
 }
 
 /// possible compiler hint that a branch is likely
+///
+/// Technique borrowed from here: <https://github.com/rust-lang/hashbrown/pull/209>
 #[cfg(not(feature = "hints"))]
 #[macro_export]
 macro_rules! likely {
-    ($e:expr) => {
-        $e
-    };
+    ($e:expr) => {{
+        #[inline]
+        #[cold]
+        fn cold() {}
+
+        let cond = $e;
+
+        if !cond {
+            cold();
+        }
+
+        cond
+    }};
 }
 
 /// possible compiler hint that a branch is unlikely
+///
+/// Technique borrowed from here: <https://github.com/rust-lang/hashbrown/pull/209>
 #[cfg(not(feature = "hints"))]
 #[macro_export]
 macro_rules! unlikely {
-    ($e:expr) => {
-        $e
-    };
+    ($e:expr) => {{
+        #[inline]
+        #[cold]
+        fn cold() {}
+
+        let cond = $e;
+
+        if cond {
+            cold();
+        }
+
+        cond
+    }};
 }
 
 /// static cast to an i8
 #[macro_export]
 macro_rules! static_cast_i8 {
     ($v:expr) => {
-        mem::transmute::<_, i8>($v)
+        ::std::transmute::<_, i8>($v)
     };
 }
 
@@ -1238,7 +1262,7 @@ macro_rules! static_cast_i8 {
 #[macro_export]
 macro_rules! static_cast_i32 {
     ($v:expr) => {
-        mem::transmute::<_, i32>($v)
+        std::mem::transmute::<_, i32>($v)
     };
 }
 
@@ -1246,7 +1270,7 @@ macro_rules! static_cast_i32 {
 #[macro_export]
 macro_rules! static_cast_u32 {
     ($v:expr) => {
-        mem::transmute::<_, u32>($v)
+        ::std::mem::transmute::<_, u32>($v)
     };
 }
 
@@ -1254,7 +1278,7 @@ macro_rules! static_cast_u32 {
 #[macro_export]
 macro_rules! static_cast_i64 {
     ($v:expr) => {
-        mem::transmute::<_, i64>($v)
+        ::std::mem::transmute::<_, i64>($v)
     };
 }
 
@@ -1262,7 +1286,7 @@ macro_rules! static_cast_i64 {
 #[macro_export]
 macro_rules! static_cast_i128 {
     ($v:expr) => {
-        mem::transmute::<_, i128>($v)
+        ::std::mem::transmute::<_, i128>($v)
     };
 }
 
@@ -1270,7 +1294,7 @@ macro_rules! static_cast_i128 {
 #[macro_export]
 macro_rules! static_cast_u64 {
     ($v:expr) => {
-        mem::transmute::<_, u64>($v)
+        ::std::mem::transmute::<_, u64>($v)
     };
 }
 
@@ -1290,7 +1314,7 @@ macro_rules! stry {
 #[cfg(test)]
 mod test {
     use crate::prelude::*;
-    use crate::{json, json_typed, BorrowedValue, OwnedValue};
+    use crate::{BorrowedValue, OwnedValue};
 
     #[cfg(feature = "serde_impl")]
     fn owned_test_map() -> OwnedValue {

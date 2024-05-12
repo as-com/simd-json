@@ -11,26 +11,17 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 use serde_json;
 
 use criterion::{criterion_group, BatchSize, Criterion, Throughput};
-use simd_json::AlignedBuf;
-use simd_json::SIMDJSON_PADDING;
+use simd_json::Buffers;
 
 use std::fs::File;
 use std::io::Read;
-
-fn to_tape(data: &mut [u8]) {
-    simd_json::to_tape(data).unwrap();
-}
 
 fn to_borrowed_value(data: &mut [u8]) {
     simd_json::to_borrowed_value(data).unwrap();
 }
 
-fn to_borrowed_value_with_buffers(
-    data: &mut [u8],
-    input_buffer: &mut AlignedBuf,
-    string_buffer: &mut [u8],
-) {
-    simd_json::to_borrowed_value_with_buffers(data, input_buffer, string_buffer).unwrap();
+fn to_borrowed_value_with_buffers(data: &mut [u8], buffers: &mut Buffers) {
+    simd_json::to_borrowed_value_with_buffers(data, buffers).unwrap();
 }
 
 fn to_owned_value(data: &mut [u8]) {
@@ -60,13 +51,7 @@ macro_rules! bench_file {
                 .warm_up_time(Duration::from_secs(1))
                 .measurement_time(Duration::from_secs(20));
 
-            group.bench_with_input("simd_json::to_tape", &vec, |b, data| {
-                b.iter_batched(
-                    || data.clone(),
-                    |mut bytes| to_tape(&mut bytes),
-                    BatchSize::SmallInput,
-                )
-            });
+            let mut buffers = Buffers::default();
 
             group.bench_with_input("simd_json::to_borrowed_value", &vec, |b, data| {
                 b.iter_batched(
@@ -76,25 +61,13 @@ macro_rules! bench_file {
                 )
             });
 
-            let len = vec.len();
-            let mut string_buffer: Vec<u8> = Vec::with_capacity(len + SIMDJSON_PADDING);
-            unsafe {
-                string_buffer.set_len(len + SIMDJSON_PADDING);
-            };
-            let mut buffer = AlignedBuf::with_capacity(len + SIMDJSON_PADDING * 2);
             group.bench_with_input(
                 "simd_json::to_borrowed_value_with_buffers",
                 &vec,
                 |b, data| {
                     b.iter_batched(
                         || data.clone(),
-                        |mut bytes| {
-                            to_borrowed_value_with_buffers(
-                                &mut bytes,
-                                &mut buffer,
-                                &mut string_buffer,
-                            )
-                        },
+                        |mut bytes| to_borrowed_value_with_buffers(&mut bytes, &mut buffers),
                         BatchSize::SmallInput,
                     )
                 },

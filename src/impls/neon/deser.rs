@@ -1,61 +1,77 @@
-#[cfg(target_arch = "x86")]
-use std::arch::x86 as arch;
-
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64 as arch;
-
-use arch::{
-    __m128i, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_set1_epi8, _mm_storeu_si128,
-};
-
-use std::mem;
-
-pub use crate::error::{Error, ErrorType};
+use crate::error::ErrorType;
+use crate::impls::neon::stage1::bit_mask;
 use crate::safer_unchecked::GetSaferUnchecked;
 use crate::stringparse::{handle_unicode_codepoint, ESCAPE_MAP};
 use crate::Deserializer;
-pub use crate::Result;
+use crate::Result;
+use crate::SillyWrapper;
 
-#[target_feature(enable = "sse4.2")]
-#[allow(
-    clippy::if_not_else,
-    clippy::transmute_ptr_to_ptr,
-    clippy::cast_ptr_alignment,
-    clippy::cast_possible_wrap,
-    clippy::too_many_lines
-)]
+use std::arch::aarch64::{
+    uint8x16_t, vandq_u8, vceqq_u8, vgetq_lane_u32, vld1q_u8, vmovq_n_u8, vpaddq_u8,
+    vreinterpretq_u32_u8,
+};
+
 #[cfg_attr(not(feature = "no-inline"), inline)]
-pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
-    input: *mut u8,
+fn find_bs_bits_and_quote_bits(v0: uint8x16_t, v1: uint8x16_t) -> (u32, u32) {
+    unsafe {
+        let quote_mask = vmovq_n_u8(b'"');
+        let bs_mask = vmovq_n_u8(b'\\');
+        let bit_mask = bit_mask();
+
+        let cmp_bs_0: uint8x16_t = vceqq_u8(v0, bs_mask);
+        let cmp_bs_1: uint8x16_t = vceqq_u8(v1, bs_mask);
+        let cmp_qt_0: uint8x16_t = vceqq_u8(v0, quote_mask);
+        let cmp_qt_1: uint8x16_t = vceqq_u8(v1, quote_mask);
+
+        let cmp_bs_0 = vandq_u8(cmp_bs_0, bit_mask);
+        let cmp_bs_1 = vandq_u8(cmp_bs_1, bit_mask);
+        let cmp_qt_0 = vandq_u8(cmp_qt_0, bit_mask);
+        let cmp_qt_1 = vandq_u8(cmp_qt_1, bit_mask);
+
+        let sum0: uint8x16_t = vpaddq_u8(cmp_bs_0, cmp_bs_1);
+        let sum1: uint8x16_t = vpaddq_u8(cmp_qt_0, cmp_qt_1);
+        let sum0 = vpaddq_u8(sum0, sum1);
+        let sum0 = vpaddq_u8(sum0, sum0);
+
+        (
+            vgetq_lane_u32(vreinterpretq_u32_u8(sum0), 0),
+            vgetq_lane_u32(vreinterpretq_u32_u8(sum0), 1),
+        )
+    }
+}
+
+#[allow(clippy::if_not_else, clippy::too_many_lines)]
+#[cfg_attr(not(feature = "no-inline"), inline)]
+pub(crate) fn parse_str<'invoke, 'de>(
+    input: SillyWrapper<'de>,
     data: &'invoke [u8],
     buffer: &'invoke mut [u8],
     mut idx: usize,
 ) -> Result<&'de str> {
     use ErrorType::{InvalidEscape, InvalidUnicodeCodepoint};
+    let input = input.input;
+
     // Add 1 to skip the initial "
     idx += 1;
+    //let mut read: usize = 0;
 
     // we include the terminal '"' so we know where to end
     // This is safe since we check sub's length in the range access above and only
     // create sub sliced form sub to `sub.len()`.
 
-    let src: &[u8] = data.get_kinda_unchecked(idx..);
+    let src: &[u8] = unsafe { data.get_kinda_unchecked(idx..) };
     let mut src_i: usize = 0;
     let mut len = src_i;
     loop {
-        let v: __m128i =
-            unsafe { _mm_loadu_si128(src.as_ptr().add(src_i).cast::<arch::__m128i>()) };
-
-        // store to dest unconditionally - we can overwrite the bits we don't like
-        // later
-        let bs_bits: u32 = unsafe {
-            static_cast_u32!(_mm_movemask_epi8(_mm_cmpeq_epi8(
-                v,
-                _mm_set1_epi8(b'\\' as i8)
-            )))
+        let (v0, v1) = unsafe {
+            (
+                vld1q_u8(src.get_kinda_unchecked(src_i..src_i + 16).as_ptr()),
+                vld1q_u8(src.get_kinda_unchecked(src_i + 16..src_i + 32).as_ptr()),
+            )
         };
-        let quote_mask = _mm_cmpeq_epi8(v, _mm_set1_epi8(b'"' as i8));
-        let quote_bits = static_cast_u32!(_mm_movemask_epi8(quote_mask));
+
+        let (bs_bits, quote_bits) = find_bs_bits_and_quote_bits(v0, v1);
+
         if (bs_bits.wrapping_sub(1) & quote_bits) != 0 {
             // we encountered quotes first. Move dst to point to quotes and exit
             // find out where the quote is...
@@ -70,8 +86,11 @@ pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
             // we advance the point, accounting for the fact that we have a NULl termination
 
             len += quote_dist as usize;
-            let v = std::str::from_utf8_unchecked(std::slice::from_raw_parts(input.add(idx), len));
-            return Ok(v);
+            unsafe {
+                let v =
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(input.add(idx), len));
+                return Ok(v);
+            }
 
             // we compare the pointers since we care if they are 'at the same spot'
             // not if they are the same value
@@ -79,8 +98,8 @@ pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
         if (quote_bits.wrapping_sub(1) & bs_bits) == 0 {
             // they are the same. Since they can't co-occur, it means we encountered
             // neither.
-            src_i += 16;
-            len += 16;
+            src_i += 32;
+            len += 32;
         } else {
             // Move to the 'bad' character
             let bs_dist: u32 = bs_bits.trailing_zeros();
@@ -94,18 +113,23 @@ pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
 
     // To be more conform with upstream
     loop {
-        let v: __m128i = _mm_loadu_si128(src.as_ptr().add(src_i).cast::<arch::__m128i>());
+        let (v0, v1) = unsafe {
+            (
+                vld1q_u8(src.get_kinda_unchecked(src_i..src_i + 16).as_ptr()),
+                vld1q_u8(src.get_kinda_unchecked(src_i + 16..src_i + 32).as_ptr()),
+            )
+        };
 
-        _mm_storeu_si128(buffer.as_mut_ptr().add(dst_i).cast::<arch::__m128i>(), v);
+        unsafe {
+            buffer
+                .get_kinda_unchecked_mut(dst_i..dst_i + 32)
+                .copy_from_slice(src.get_kinda_unchecked(src_i..src_i + 32));
+        }
 
         // store to dest unconditionally - we can overwrite the bits we don't like
         // later
-        let bs_bits: u32 = static_cast_u32!(_mm_movemask_epi8(_mm_cmpeq_epi8(
-            v,
-            _mm_set1_epi8(b'\\' as i8)
-        )));
-        let quote_mask = _mm_cmpeq_epi8(v, _mm_set1_epi8(b'"' as i8));
-        let quote_bits = static_cast_u32!(_mm_movemask_epi8(quote_mask));
+        let (bs_bits, quote_bits) = find_bs_bits_and_quote_bits(v0, v1);
+
         if (bs_bits.wrapping_sub(1) & quote_bits) != 0 {
             // we encountered quotes first. Move dst to point to quotes and exit
             // find out where the quote is...
@@ -120,14 +144,16 @@ pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
             // we advance the point, accounting for the fact that we have a NULl termination
 
             dst_i += quote_dist as usize;
-            input
-                .add(idx + len)
-                .copy_from_nonoverlapping(buffer.as_ptr(), dst_i);
-            let v = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                input.add(idx),
-                len + dst_i,
-            ));
-            return Ok(v);
+            unsafe {
+                input
+                    .add(idx + len)
+                    .copy_from_nonoverlapping(buffer.as_ptr(), dst_i);
+                let v = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    input.add(idx),
+                    len + dst_i,
+                ));
+                return Ok(v);
+            }
 
             // we compare the pointers since we care if they are 'at the same spot'
             // not if they are the same value
@@ -135,17 +161,17 @@ pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
         if (quote_bits.wrapping_sub(1) & bs_bits) != 0 {
             // find out where the backspace is
             let bs_dist: u32 = bs_bits.trailing_zeros();
-            let escape_char: u8 = *src.get_kinda_unchecked(src_i + bs_dist as usize + 1);
+            let escape_char: u8 = unsafe { *src.get_kinda_unchecked(src_i + bs_dist as usize + 1) };
             // we encountered backslash first. Handle backslash
             if escape_char == b'u' {
                 // move src/dst up to the start; they will be further adjusted
                 // within the unicode codepoint handling code.
                 src_i += bs_dist as usize;
                 dst_i += bs_dist as usize;
-                let (o, s) = if let Ok(r) = handle_unicode_codepoint(
-                    src.get_kinda_unchecked(src_i..),
-                    buffer.get_kinda_unchecked_mut(dst_i..),
-                ) {
+                let (o, s) = if let Ok(r) =
+                    handle_unicode_codepoint(unsafe { src.get_kinda_unchecked(src_i..) }, unsafe {
+                        buffer.get_kinda_unchecked_mut(dst_i..)
+                    }) {
                     r
                 } else {
                     return Err(Deserializer::error_c(src_i, 'u', InvalidUnicodeCodepoint));
@@ -161,7 +187,8 @@ pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
                 // write bs_dist+1 characters to output
                 // note this may reach beyond the part of the buffer we've actually
                 // seen. I think this is ok
-                let escape_result: u8 = *ESCAPE_MAP.get_kinda_unchecked(escape_char as usize);
+                let escape_result: u8 =
+                    unsafe { *ESCAPE_MAP.get_kinda_unchecked(escape_char as usize) };
                 if escape_result == 0 {
                     return Err(Deserializer::error_c(
                         src_i,
@@ -169,15 +196,17 @@ pub(crate) unsafe fn parse_str_sse<'invoke, 'de>(
                         InvalidEscape,
                     ));
                 }
-                *buffer.get_kinda_unchecked_mut(dst_i + bs_dist as usize) = escape_result;
+                unsafe {
+                    *buffer.get_kinda_unchecked_mut(dst_i + bs_dist as usize) = escape_result;
+                }
                 src_i += bs_dist as usize + 2;
                 dst_i += bs_dist as usize + 1;
             }
         } else {
             // they are the same. Since they can't co-occur, it means we encountered
             // neither.
-            src_i += 16;
-            dst_i += 16;
+            src_i += 32;
+            dst_i += 32;
         }
     }
 }
